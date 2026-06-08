@@ -747,43 +747,12 @@ async function handleBrowserTest(tcList, sendProgress, excelPath, ctx) {
   }
 
   const resolvedExcel = excelPath || getExcelPath(ctx) || findLatestExcel();
-  if (resolvedExcel && fs.existsSync(resolvedExcel)) {
-    const writeResultScript = path.join(os.tmpdir(), "qa_write_result.py");
-    const resultsJson = JSON.stringify(results).replace(/\\/g, "\\\\").replace(/'/g, "\\'");
-    fs.writeFileSync(writeResultScript, [
-      "# -*- coding: utf-8 -*-",
-      "import sys, io",
-      "sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')",
-      "import openpyxl, json, re",
-      `wb = openpyxl.load_workbook(r'${resolvedExcel.replace(/\\/g, "\\\\")}')`,
-      "ws = wb['Test Case']",
-      `results = json.loads('${resultsJson}')`,
-      "result_map = {r['tc_id']: r for r in results}",
-      "def clean(v): return re.sub(r'[\\x00-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f-\\x9f]', '', str(v or ''))[:500]",
-      "header_row = 4",
-      "tc_col = actual_col = status_col = None",
-      "for cell in ws[header_row]:",
-      "    v = str(cell.value or '')",
-      "    if 'Test Case' in v and 'ID' in v: tc_col = cell.column",
-      "    if 'Actual' in v: actual_col = cell.column",
-      "    if 'Scenario' in v and 'Status' in v: status_col = cell.column",
-      "for row in ws.iter_rows(min_row=header_row+1):",
-      "    tc_id = str(row[tc_col-1].value or '').strip() if tc_col else ''",
-      "    if tc_id in result_map:",
-      "        r = result_map[tc_id]",
-      "        if actual_col: row[actual_col-1].value = clean(r.get('actual', ''))",
-      "        if status_col: row[status_col-1].value = 'PASS' if r['status'] == 'PASS' else 'FAIL'",
-      `wb.save(r'${resolvedExcel.replace(/\\/g, "\\\\")}')`,
-      "print('saved')",
-    ].join("\n"), "utf8");
-    try {
-      execSync(`${PYTHON} "${writeResultScript}"`, {
-        encoding: "utf8",
-        env: { ...process.env, PYTHONIOENCODING: "utf-8", PYTHONUTF8: "1" },
-      });
-      console.log("Written results back to Excel");
-    } catch (e) { console.error("Write result error:", e.message); }
-  }
+  const excelWriteResults = results.map(r => ({
+    tc_id:  r.tc_id,
+    status: r.status === "PASS" ? "PASS" : "FAIL",
+    actual: r.actual,
+  }));
+  writeResultsToExcel(resolvedExcel, excelWriteResults);
 
   const passCount  = results.filter(r => r.status === "PASS").length;
   const failCount  = results.filter(r => r.status === "FAIL").length;
@@ -818,6 +787,49 @@ function findLatestExcel() {
   const others  = fs.readdirSync(tmpDir).filter(f => f.endsWith(".xlsx") && !f.startsWith("matched_")).map(f => ({ name: f, time: fs.statSync(path.join(tmpDir, f)).mtime })).sort((a, b) => b.time - a.time);
   const found   = matched.length > 0 ? matched : others;
   return found.length > 0 ? path.join(tmpDir, found[0].name) : null;
+}
+
+function writeResultsToExcel(excelPath, results) {
+  if (!excelPath || !fs.existsSync(excelPath) || !results?.length) return false;
+  const writeResultScript = path.join(os.tmpdir(), "qa_write_result.py");
+  const resultsJson = JSON.stringify(results).replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+  fs.writeFileSync(writeResultScript, [
+    "# -*- coding: utf-8 -*-",
+    "import sys, io",
+    "sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')",
+    "import openpyxl, json, re",
+    `wb = openpyxl.load_workbook(r'${excelPath.replace(/\\/g, "\\\\")}')`,
+    "ws = wb['Test Case']",
+    `results = json.loads('${resultsJson}')`,
+    "result_map = {r['tc_id']: r for r in results}",
+    "def clean(v): return re.sub(r'[\\x00-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f-\\x9f]', '', str(v or ''))[:500]",
+    "header_row = 4",
+    "tc_col = actual_col = status_col = None",
+    "for cell in ws[header_row]:",
+    "    v = str(cell.value or '')",
+    "    if 'Test Case' in v and 'ID' in v: tc_col = cell.column",
+    "    if 'Actual' in v: actual_col = cell.column",
+    "    if 'Scenario' in v and 'Status' in v: status_col = cell.column",
+    "for row in ws.iter_rows(min_row=header_row+1):",
+    "    tc_id = str(row[tc_col-1].value or '').strip() if tc_col else ''",
+    "    if tc_id in result_map:",
+    "        r = result_map[tc_id]",
+    "        if actual_col: row[actual_col-1].value = clean(r.get('actual', ''))",
+    "        if status_col: row[status_col-1].value = r['status']",
+    `wb.save(r'${excelPath.replace(/\\/g, "\\\\")}')`,
+    "print('saved')",
+  ].join("\n"), "utf8");
+  try {
+    execSync(`${PYTHON} "${writeResultScript}"`, {
+      encoding: "utf8",
+      env: { ...process.env, PYTHONIOENCODING: "utf-8", PYTHONUTF8: "1" },
+    });
+    console.log("Written results back to Excel");
+    return true;
+  } catch (e) {
+    console.error("Write result error:", e.message);
+    return false;
+  }
 }
 
 async function readTestCasesFromExcel(filePath, tcFilter = null) {
@@ -1214,8 +1226,24 @@ async function handleMessage(userMessage, discordUserId, fileUrl = null, fileNam
         const tc = rows[0];
         if (!tc)          return `❌ ไม่พบ Test Case "${intent.tcId}" ใน Excel ครับ`;
         if (!tc.jira_key) return `❌ ไม่พบ jira_key สำหรับ ${intent.tcId} ใน Excel ครับ (คอลัมน์ Upload Jira ว่าง)`;
-        const issueKey = tc.jira_key.split("/").pop();
-        return await handleUpdateIssue(issueKey, intent.action, intent.comment);
+        const issueKey   = tc.jira_key.split("/").pop();
+        const jiraResult = await handleUpdateIssue(issueKey, intent.action, intent.comment);
+        const jiraOk     = !jiraResult.startsWith("❌");
+
+        if (jiraOk) {
+          const statusMap   = { pass: "PASS", fail: "FAIL", block: "BLOCKED", blocked: "BLOCKED" };
+          const excelStatus = statusMap[intent.action] || intent.action.toUpperCase();
+          writeResultsToExcel(excelPath, [{
+            tc_id:  tc.tc_id,
+            status: excelStatus,
+            actual: intent.comment || `Manual update: ${excelStatus}`,
+          }]);
+        }
+
+        const askRetest = jiraOk && intent.action === "pass"
+          ? `\n__ASK_RETEST__:${tc.tc_id}`
+          : "";
+        return jiraResult + askRetest;
       }
       case "overdue":       return await handleOverdue(ctx);
       case "uat_pending":   return await handleUatPending(userMessage, ctx);

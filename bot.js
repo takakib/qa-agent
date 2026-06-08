@@ -388,13 +388,54 @@ client.on("messageCreate", async (message) => {
           sendProgress,
           { systemPrompt, context }
         );
-        await sendLong(message, reply);
+
+        const retestMatch = reply.match(/__ASK_RETEST__:(TC_[A-Z0-9_]+)/);
+        const cleanReply  = retestMatch
+          ? reply.replace(/\n?__ASK_RETEST__:[^\n]+/, "").trimEnd()
+          : reply;
+
+        await sendLong(message, cleanReply);
 
         const logExtras = {};
         if (tcId)        logExtras.tc      = tcId;
         if (projectName) logExtras.project = projectName;
         if (intent !== "unknown") logExtras.note = userMessage.slice(0, 80);
         contextLoader.logAction(discordUserId, intent, logExtras);
+
+        if (retestMatch) {
+          const retestTc = retestMatch[1];
+          await message.channel.send(`อัปเดตเรียบร้อยครับ จะให้ Retest ${retestTc} เลยไหมครับ? (yes/no)`);
+          waitingConfirm.add(discordUserId);
+          try {
+            const filter    = m => m.author.id === discordUserId && /^(y|yes|n|no|ใช่|ไม่)\s*$/i.test(m.content.trim());
+            const collected = await message.channel.awaitMessages({ filter, max: 1, time: 30000, errors: ["time"] });
+            const answer    = collected.first().content.trim();
+            waitingConfirm.delete(discordUserId);
+            if (/^(y|yes|ใช่)/i.test(answer)) {
+              await message.channel.sendTyping();
+              await message.channel.send(`⏳ กำลัง retest ${retestTc} ครับ...`);
+              const retestReply = await handleMessage(
+                `retest ${retestTc}`,
+                discordUserId,
+                null,
+                null,
+                sendProgress,
+                { systemPrompt, context }
+              );
+              await sendLong(message, retestReply);
+            } else {
+              await message.channel.send("✅ รับทราบครับ ไม่ retest");
+            }
+          } catch (err) {
+            waitingConfirm.delete(discordUserId);
+            if (err.message?.includes("time") || err.size === 0) {
+              await message.channel.send("⏰ หมดเวลา 30 วินาที ยกเลิก retest ครับ");
+            } else {
+              console.error("Retest prompt error:", err);
+              await message.channel.send(`❌ เกิดข้อผิดพลาดครับ: ${err.message}`);
+            }
+          }
+        }
         break;
       }
     }
