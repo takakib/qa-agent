@@ -435,6 +435,44 @@ client.on("messageCreate", async (message) => {
               await message.channel.send(`❌ เกิดข้อผิดพลาดครับ: ${err.message}`);
             }
           }
+        } else if (
+          intent === "browser_test" &&
+          tcId &&
+          !/^\s*retest\b/i.test(userMessage) &&
+          new RegExp(`✅\\s+${tcId}\\b`).test(reply)
+        ) {
+          // Browser test PASS → ask Retest (skip if user already ran "retest TC_xxx" to avoid loop)
+          await message.channel.send(`จะให้ Retest ${tcId} เลยไหมครับ? (yes/no)`);
+          waitingConfirm.add(discordUserId);
+          try {
+            const filter    = m => m.author.id === discordUserId && /^(y|yes|n|no|ใช่|ไม่)\s*$/i.test(m.content.trim());
+            const collected = await message.channel.awaitMessages({ filter, max: 1, time: 30000, errors: ["time"] });
+            const answer    = collected.first().content.trim();
+            waitingConfirm.delete(discordUserId);
+            if (/^(y|yes|ใช่)/i.test(answer)) {
+              await message.channel.sendTyping();
+              await message.channel.send(`⏳ กำลัง retest ${tcId} ครับ...`);
+              const retestReply = await handleMessage(
+                `retest ${tcId}`,
+                discordUserId,
+                null,
+                null,
+                sendProgress,
+                { systemPrompt, context }
+              );
+              await sendLong(message, retestReply);
+            } else {
+              await message.channel.send("✅ รับทราบครับ ไม่ retest");
+            }
+          } catch (err) {
+            waitingConfirm.delete(discordUserId);
+            if (err.message?.includes("time") || err.size === 0) {
+              await message.channel.send("⏰ หมดเวลา 30 วินาที ยกเลิก retest ครับ");
+            } else {
+              console.error("Browser PASS retest prompt error:", err);
+              await message.channel.send(`❌ เกิดข้อผิดพลาดครับ: ${err.message}`);
+            }
+          }
         }
         break;
       }
