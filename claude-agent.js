@@ -396,35 +396,63 @@ Node modules path: ${path.join(__dirname, "node_modules")}
 
 ข้อมูล UI จริงของระบบ (ต้องอ่านและทำตามนี้):
 
-LOGIN:
-- const context = await browser.newContext({storageState: undefined});
-- await page.locator('input[placeholder]').first().fill(username);
-- await page.locator('input').first().evaluate(el => { el.value = ''; el.dispatchEvent(new Event('input', {bubbles:true})); });
-- await page.locator('input').first().fill('${APP_USERNAME}');
-- await page.locator('input[type="password"]').fill(password);
-- await page.locator('button[type="button"]').last().click();
-- หลัง login เช็ค popup เซสชันก่อนต่อไป:
-  await page.waitForTimeout(2000);
-  await page.evaluate(() => {
-    const btns = [...document.querySelectorAll('button[type=button]')];
-    const btn = btns.find(b => b.className.includes('bg_interactive.default'));
+LOGIN (ใช้ keyboard.type แทน fill เสมอ เพื่อให้ React state อัปเดต):
+- await page.goto('${appUrl}');
+- await page.waitForSelector('input', { timeout: 10000 });
+- await page.waitForTimeout(1000);
+- await page.locator('input').first().click();
+- await page.locator('input').first().clear();
+- await page.keyboard.type('${APP_USERNAME}', { delay: 50 });
+- await page.waitForTimeout(300);
+- await page.locator('input[type=password]').click();
+- await page.keyboard.type('${APP_PASSWORD}', { delay: 50 });
+- await page.waitForTimeout(300);
+- await page.evaluate(() => {
+    const btn = [...document.querySelectorAll('button')].find(b => {
+      const t = (b.textContent || '').trim();
+      return t === 'Sign In' || t === 'เข้าสู่ระบบ' || t === 'Login';
+    });
     if (btn) btn.click();
-  }).catch(() => {});
-  await page.waitForLoadState('networkidle');
-  await page.waitForTimeout(1000);
+  });
+- await page.waitForLoadState('networkidle');
+- await page.waitForTimeout(2000);
+- หลัง login เช็ค popup session ซ้อน (รองรับทั้งภาษาไทย 'ยืนยัน' และอังกฤษ 'Confirm' / 'Confirm Sign In'):
+  try {
+    const allBtns = await page.locator('button').all();
+    for (const btn of allBtns) {
+      const text = await btn.textContent();
+      if (text && (text.includes('ยืนยัน') || text.includes('Confirm Sign In') || text.includes('Confirm'))) {
+        await btn.click();
+        break;
+      }
+    }
+    await page.waitForLoadState('networkidle');
+    await page.waitForTimeout(2000);
+  } catch (e) {}
 
 LOGOUT (do before every process.exit):
 - try { await page.evaluate(() => { localStorage.clear(); sessionStorage.clear(); }); } catch(_) {}
 - This clears the session so the next run will not show the duplicate-session popup.
 
-NAVIGATION (sidebar):
-- จัดการผู้ใช้งาน:
-  const navLink = page.locator('nav a, aside a, [class*="sidebar"] a, [class*="menu"] a').filter({ hasText: /user|manage/i }).first();
-  await navLink.scrollIntoViewIfNeeded();
-  await navLink.click();
+NAVIGATION (ใช้ goto URL โดยตรง อย่าคลิก sidebar):
+- จัดการผู้ใช้งาน (User Management):
+  await page.goto('${appUrl}'.replace(/\\/$/, '') + '/user-management');
   await page.waitForLoadState('networkidle');
-- คลิก tab Roles: await page.locator('button').filter({ hasText: 'Roles' }).click();
-- คลิก tab Groups: await page.locator('button').filter({ hasText: 'Groups' }).click();
+  await page.waitForTimeout(2000);
+- คลิก tab Roles (ใช้ evaluate เสมอ ห้ามใช้ filter hasText ภาษาไทย):
+  await page.evaluate(() => {
+    const btns = [...document.querySelectorAll('button')];
+    const btn = btns.find(b => (b.textContent || '').trim() === 'Roles');
+    if (btn) btn.click();
+  });
+  await page.waitForTimeout(2000);
+- คลิก tab Groups (ใช้ evaluate เสมอ):
+  await page.evaluate(() => {
+    const btns = [...document.querySelectorAll('button')];
+    const btn = btns.find(b => (b.textContent || '').trim() === 'Groups');
+    if (btn) btn.click();
+  });
+  await page.waitForTimeout(2000);
 - ปิด overlay/modal ก่อนคลิก tab:
   await page.waitForSelector('div[role="dialog"]', { state: 'detached', timeout: 5000 }).catch(() => {});
 
