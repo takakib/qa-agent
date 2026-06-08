@@ -31,7 +31,7 @@ const { chromium } = require('D:\\QA_Agent\\node_modules\\playwright');
       const allBtns = await page.locator('button').all();
       for (const btn of allBtns) {
         const text = await btn.textContent();
-        if (text && (text.includes('ยืนยัน') || text.includes('Confirm Sign In') || text.includes('Confirm'))) {
+        if (text && (text.includes('Confirm') || text.includes('ยืนยัน'))) {
           await btn.click();
           break;
         }
