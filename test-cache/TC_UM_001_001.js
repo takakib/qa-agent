@@ -56,42 +56,47 @@ const { chromium } = require('D:\\QA_Agent\\node_modules\\playwright');
     });
     await page.waitForTimeout(2000);
 
-    await page.locator('button').filter({ hasText: /เพิ่ม Role|Add Role/i }).last().click();
-    await page.waitForTimeout(1000);
+    const roleExists = await page.evaluate(() => {
+      return [...document.querySelectorAll('*')].some(el => el.children.length === 0 && el.textContent.trim() === 'RDT_Adjuster');
+    });
+    if (!roleExists) {
+      await page.locator('button').filter({ hasText: /เพิ่ม Role|Add Role/i }).last().click();
+      await page.waitForTimeout(1000);
 
-    await page.evaluate(() => {
-      const inputs = document.querySelectorAll('div[role="dialog"] input[type="text"]');
-      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-      inputs.forEach(el => {
-        el.focus();
-        setter.call(el, 'RDT_Adjuster');
-        el.dispatchEvent(new Event('input', { bubbles: true }));
-        el.dispatchEvent(new Event('change', { bubbles: true }));
+      await page.evaluate(() => {
+        const inputs = document.querySelectorAll('div[role="dialog"] input[type="text"]');
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+        inputs.forEach(el => {
+          el.focus();
+          setter.call(el, 'RDT_Adjuster');
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+        });
       });
-    });
-    await page.waitForTimeout(500);
+      await page.waitForTimeout(500);
 
-    await page.evaluate(() => {
-      const boxes = document.querySelectorAll('div[role="dialog"] input[type="checkbox"]');
-      if (boxes[1] && !boxes[1].checked) boxes[1].click();
-      if (boxes[2] && !boxes[2].checked) boxes[2].click();
-    });
-    await page.waitForTimeout(500);
+      await page.evaluate(() => {
+        const boxes = document.querySelectorAll('div[role="dialog"] input[type="checkbox"]');
+        if (boxes[1] && !boxes[1].checked) boxes[1].click();
+        if (boxes[2] && !boxes[2].checked) boxes[2].click();
+      });
+      await page.waitForTimeout(500);
 
-    await page.evaluate(() => {
-      const btns = [...document.querySelectorAll('div[role="dialog"] button')];
-      const save = btns.find(b => !b.disabled && /^(เพิ่ม|บันทึก|Add|Save|Create)\s*Role$/i.test(b.textContent.trim()));
-      if (save) { save.click(); return; }
-      const enabled = btns.filter(b => !b.disabled);
-      if (enabled.length) enabled[enabled.length - 1].click();
-    });
-    await page.waitForTimeout(2000);
+      await page.evaluate(() => {
+        const btns = [...document.querySelectorAll('div[role="dialog"] button')];
+        const save = btns.find(b => !b.disabled && /^(เพิ่ม|บันทึก|Add|Save|Create)\s*Role$/i.test(b.textContent.trim()));
+        if (save) { save.click(); return; }
+        const enabled = btns.filter(b => !b.disabled);
+        if (enabled.length) enabled[enabled.length - 1].click();
+      });
+      await page.waitForTimeout(2000);
 
-    await page.locator('button.swal2-confirm').click({ timeout: 5000 }).catch(() => {});
-    await page.waitForTimeout(2000);
+      await page.locator('button.swal2-confirm').click({ timeout: 5000 }).catch(() => {});
+      await page.waitForTimeout(2000);
 
-    await page.locator('div[role="dialog"]').waitFor({ state: 'detached', timeout: 5000 }).catch(() => {});
-    await page.waitForTimeout(1000);
+      await page.locator('div[role="dialog"]').waitFor({ state: 'detached', timeout: 5000 }).catch(() => {});
+      await page.waitForTimeout(1000);
+    }
 
     await page.waitForTimeout(3000);
     await page.evaluate(() => {
