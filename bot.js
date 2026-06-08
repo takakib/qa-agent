@@ -234,6 +234,10 @@ client.on("messageCreate", async (message) => {
   }
 
   // ── handle intent ──────────────────────────────────────────
+  if (["1", "2"].includes(userMessage) && !waitingConfirm.has(discordUserId)) {
+    console.log(`[SKIP] '${userMessage}' from ${discordUserId} not in waitingConfirm`);
+    return;
+  }
   if (waitingConfirm.has(discordUserId)) return;
 
   await message.channel.sendTyping();
