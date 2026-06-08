@@ -17,6 +17,46 @@ const DISCORD_MAX   = 1900;
 const processedIds   = new Set();
 const waitingConfirm = new Set();
 
+// ── Thai reminder parser ──────────────────────────────────
+// รองรับ: 'เตือนฉัน <ข้อความ> พรุ่งนี้ 10 โมง' / 'เตือนฉัน <ข้อความ> วันนี้ 14:00'
+//          เพิ่ม: มะรืน, X โมง Y นาที, X:Y, ทุ่ม, นาฬิกา
+function parseReminder(raw) {
+  let body = String(raw || "")
+    .replace(/^(เตือนฉัน|เตือนหน่อย|เตือน|แจ้งเตือน|remind\s+me|remind)\s*(?:ว่า|to)?\s*/i, "")
+    .trim();
+  if (!body) return null;
+
+  const timeRe =
+    /\s*(วันนี้|พรุ่งนี้|มะรืน|today|tomorrow)?\s*(?:ตอน|เวลา|at)?\s*(\d{1,2})(?::(\d{2})|\s*โมง(?:\s*(\d{1,2})\s*นาที)?|\s*ทุ่ม|\s*นาฬิกา)?\s*$/i;
+
+  const m = body.match(timeRe);
+  if (!m || m[2] === undefined) return null;
+
+  const dayWord = (m[1] || "").toLowerCase();
+  const matched = m[0];
+  const isThung = /ทุ่ม/.test(matched);
+
+  let hour   = parseInt(m[2], 10);
+  let minute = m[3] !== undefined ? parseInt(m[3], 10) : (m[4] !== undefined ? parseInt(m[4], 10) : 0);
+
+  if (isThung && hour >= 1 && hour <= 6) hour += 18;          // 1 ทุ่ม = 19
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+
+  const text = body.slice(0, m.index).replace(/[,，]$/, "").trim();
+  if (!text) return null;
+
+  const due = new Date();
+  if (/พรุ่งนี้|tomorrow/.test(dayWord))      due.setDate(due.getDate() + 1);
+  else if (/มะรืน/.test(dayWord))             due.setDate(due.getDate() + 2);
+  due.setHours(hour, minute, 0, 0);
+
+  if (!dayWord && due.getTime() < Date.now()) {
+    due.setDate(due.getDate() + 1);                            // เวลาผ่านไปแล้ว → เลื่อนเป็นพรุ่งนี้
+  }
+
+  return { text, dueAt: due.toISOString() };
+}
+
 function splitMessage(text) {
   const lines  = text.split("\n");
   const chunks = [];
@@ -302,6 +342,28 @@ client.on("messageCreate", async (message) => {
           files.forEach(f => fs.unlinkSync(path.join(cacheDir, f)));
           await message.reply(`🗑️ ลบ cache ทั้งหมด ${files.length} script แล้วครับ`);
         }
+        break;
+      }
+
+      case "remind": {
+        const parsed = parseReminder(userMessage);
+        if (!parsed) {
+          await message.reply([
+            "ขอรูปแบบใหม่อีกทีครับ ลองแบบนี้ครับ:",
+            "• `เตือนฉัน ประชุม พรุ่งนี้ 10 โมง`",
+            "• `เตือนฉัน ส่งงาน วันนี้ 14:00`",
+            "• `เตือนฉัน demo มะรืน 2 ทุ่ม`",
+          ].join("\n"));
+          break;
+        }
+
+        contextLoader.addReminder(discordUserId, parsed.text, parsed.dueAt);
+        contextLoader.logAction(discordUserId, "remind", { note: parsed.text });
+
+        const dueLocal = new Date(parsed.dueAt).toLocaleString("th-TH", {
+          timeZone: "Asia/Bangkok", dateStyle: "short", timeStyle: "short",
+        });
+        await message.reply(`⏰ ตั้งเตือนแล้วครับ: **${parsed.text}**\n📅 ${dueLocal}`);
         break;
       }
 

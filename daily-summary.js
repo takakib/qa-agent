@@ -298,6 +298,9 @@ function startScheduler(client) {
     const memory = contextLoader.readMemory();
     const users  = memory.users || {};
 
+    // ── Reminders ที่ถึงเวลา ─────────────────────────────
+    await checkAndSendReminders(client, memory);
+
     for (const [userId, user] of Object.entries(users)) {
       const reportTime  = user.preferences?.reportTime   || "09:00";
       const eveningTime = user.preferences?.eveningReport || "17:00";
@@ -324,6 +327,36 @@ function startScheduler(client) {
       }
     }
   }, 60 * 1000);
+}
+
+async function checkAndSendReminders(client, memory) {
+  const reminders = memory.reminders || [];
+  if (reminders.length === 0) return;
+
+  const now  = Date.now();
+  const due  = [];
+  const keep = [];
+  for (const r of reminders) {
+    if (new Date(r.dueAt).getTime() <= now) due.push(r);
+    else keep.push(r);
+  }
+  if (due.length === 0) return;
+
+  for (const r of due) {
+    try {
+      const u = await client.users.fetch(r.userId);
+      const dueLocal = new Date(r.dueAt).toLocaleString("th-TH", {
+        timeZone: "Asia/Bangkok", dateStyle: "short", timeStyle: "short",
+      });
+      await u.send(`⏰ **เตือนความจำ**\n${r.text}\n📅 ${dueLocal}`);
+      console.log(`[REMINDER] sent → ${r.userId}: ${r.text}`);
+    } catch (e) {
+      console.error(`[REMINDER] send failed (${r.userId}):`, e.message);
+    }
+  }
+
+  memory.reminders = keep;
+  contextLoader.writeMemory(memory);
 }
 
 async function findUserChannel(client, userId) {

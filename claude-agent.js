@@ -1140,6 +1140,8 @@ function detectIntent(msg) {
   const m           = msg.toLowerCase();
   const updateMatch = msg.match(/^([A-Z]+-\d+)\s+(pass|fail|block|blocked|retest|uat|testing|fix|fixing|ผ่าน|ไม่ผ่าน|บล็อค|done)(.*)/i);
   if (updateMatch) return { type: "update_issue", issueKey: updateMatch[1].toUpperCase(), action: updateMatch[2].toLowerCase(), comment: updateMatch[3].trim() };
+  const manualMatch = msg.match(/^(TC_[A-Z0-9_]+)\s+(pass|fail|block|blocked)\b(.*)/i);
+  if (manualMatch) return { type: "manual_update", tcId: manualMatch[1].toUpperCase(), action: manualMatch[2].toLowerCase(), comment: manualMatch[3].trim() };
   const testMatch = msg.match(/^test\s+(all|TC_[A-Z0-9_]+)/i);
   if (testMatch) return { type: "browser_test", target: testMatch[1].toUpperCase() };
   const retestMatch = msg.match(/^retest\s+(TC_[A-Z0-9_]+)/i);
@@ -1203,6 +1205,18 @@ async function handleMessage(userMessage, discordUserId, fileUrl = null, fileNam
         return `🔄 Jira update: **${on ? "ON ✅" : "OFF ❌"}**`;
       }
       case "update_issue":  return await handleUpdateIssue(intent.issueKey, intent.action, intent.comment);
+      case "manual_update": {
+        const excelPath = getExcelPath(ctx) || findLatestExcel();
+        if (!excelPath) return "❌ ไม่พบไฟล์ Excel ครับ กรุณาแนบไฟล์ Excel ก่อน";
+        let rows;
+        try { rows = await readTestCasesFromExcel(excelPath, intent.tcId); }
+        catch (e) { return `❌ อ่าน Excel ล้มเหลว: ${e.message}`; }
+        const tc = rows[0];
+        if (!tc)          return `❌ ไม่พบ Test Case "${intent.tcId}" ใน Excel ครับ`;
+        if (!tc.jira_key) return `❌ ไม่พบ jira_key สำหรับ ${intent.tcId} ใน Excel ครับ (คอลัมน์ Upload Jira ว่าง)`;
+        const issueKey = tc.jira_key.split("/").pop();
+        return await handleUpdateIssue(issueKey, intent.action, intent.comment);
+      }
       case "overdue":       return await handleOverdue(ctx);
       case "uat_pending":   return await handleUatPending(userMessage, ctx);
       case "due_soon":      return await handleDueSoon(intent.days, ctx);
