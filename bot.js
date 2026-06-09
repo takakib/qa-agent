@@ -37,7 +37,7 @@ function getTcStatusFromExcel(excelPath, tcId) {
     "import openpyxl",
     `wb = openpyxl.load_workbook(r'${excelPath.replace(/\\/g, "\\\\")}', data_only=True)`,
     "ws = wb['Test Case']",
-    "header_row = 4",
+    "header_row = 3",
     "tc_col = status_col = None",
     "for cell in ws[header_row]:",
     "    v = str(cell.value or '')",
