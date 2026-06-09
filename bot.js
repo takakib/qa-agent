@@ -4,12 +4,71 @@
 require("dotenv").config();
 
 const { Client, GatewayIntentBits } = require("discord.js");
-const { askClaude: handleMessage, getTcStatusFromExcel, getExcelPath, findLatestExcel } = require("./claude-agent");
+const { askClaude: handleMessage }  = require("./claude-agent");
 const contextLoader                 = require("./context-loader");
 const { handleSummary, startScheduler } = require("./daily-summary");
 const config                        = require("./config");
 const path                          = require("path");
 const fs                            = require("fs");
+const os                            = require("os");
+const { execSync }                  = require("child_process");
+
+function getExcelPath(ctx) {
+  return ctx?.activeProject?.excelPath || null;
+}
+
+function findLatestExcel() {
+  const dataDir = path.join(__dirname, "data");
+  if (!fs.existsSync(dataDir)) return null;
+  const files = fs.readdirSync(dataDir)
+    .filter(f => f.endsWith(".xlsx"))
+    .map(f => ({ name: f, time: fs.statSync(path.join(dataDir, f)).mtime }))
+    .sort((a, b) => b.time - a.time);
+  return files.length > 0 ? path.join(dataDir, files[0].name) : null;
+}
+
+function getTcStatusFromExcel(excelPath, tcId) {
+  if (!excelPath || !fs.existsSync(excelPath) || !tcId) return null;
+  const script = path.join(os.tmpdir(), "qa_read_status_bot.py");
+  fs.writeFileSync(script, [
+    "# -*- coding: utf-8 -*-",
+    "import sys, io",
+    "sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')",
+    "import openpyxl",
+    `wb = openpyxl.load_workbook(r'${excelPath.replace(/\\/g, "\\\\")}', data_only=True)`,
+    "ws = wb['Test Case']",
+    "header_row = 4",
+    "tc_col = status_col = None",
+    "for cell in ws[header_row]:",
+    "    v = str(cell.value or '')",
+    "    if 'Test Case' in v and 'ID' in v: tc_col = cell.column",
+    "    if 'Scenario' in v and 'Status' in v: status_col = cell.column",
+    "if not tc_col or not status_col:",
+    "    print('')",
+    "    sys.exit(0)",
+    `target = '${tcId.replace(/'/g, "\\'")}'`,
+    "found = ''",
+    "for row in ws.iter_rows(min_row=header_row+1):",
+    "    tc = str(row[tc_col-1].value or '').strip()",
+    "    if tc.lower() == target.lower():",
+    "        found = str(row[status_col-1].value or '').strip()",
+    "        break",
+    "print(found)",
+  ].join("\n"), "utf8");
+  try {
+    const out = execSync(`python "${script}"`, {
+      encoding: "utf8",
+      env: { ...process.env, PYTHONIOENCODING: "utf-8", PYTHONUTF8: "1" },
+    }).trim();
+    if (!out) return null;
+    if (/pass/i.test(out)) return "PASS";
+    if (/fail/i.test(out)) return "FAIL";
+    return null;
+  } catch (e) {
+    console.error("getTcStatusFromExcel error:", e.message);
+    return null;
+  }
+}
 
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const DISCORD_MAX   = 1900;

@@ -60,7 +60,7 @@ const { chromium } = require('D:\\QA_Agent\\node_modules\\playwright');
       return [...document.querySelectorAll('*')].some(el => el.children.length === 0 && el.textContent.trim() === 'RDT_Adjuster');
     });
     if (!roleExists) {
-      await page.locator('button').filter({ hasText: /เพิ่ม Role|Add Role/i }).last().click();
+      await page.evaluate(() => { const b = [...document.querySelectorAll('button')].find(b => b.textContent.includes('Add Role') || b.textContent.includes('เพิ่ม Role')); if(b) b.click(); });
       await page.waitForTimeout(1000);
 
       await page.evaluate(() => {
@@ -99,14 +99,10 @@ const { chromium } = require('D:\\QA_Agent\\node_modules\\playwright');
     }
 
     await page.waitForTimeout(3000);
-    await page.evaluate(() => {
-      const btns = [...document.querySelectorAll('button')];
-      const btn = btns.find(b => b.textContent.trim() === 'Groups');
-      if (btn) btn.click();
-    });
+    await page.evaluate(() => { const b = [...document.querySelectorAll('button')].find(b => b.textContent.trim() === 'Groups'); if(b) b.click(); });
     await page.waitForTimeout(2000);
 
-    await page.locator('button').filter({ hasText: /เพิ่ม Group|Add Group/i }).last().click();
+    await page.evaluate(() => { const b = [...document.querySelectorAll('button')].find(b => b.textContent.includes('Add Group') || b.textContent.includes('เพิ่ม Group')); if(b) b.click(); });
     await page.waitForTimeout(1000);
 
     await page.evaluate((v) => {
