@@ -4,7 +4,7 @@
 require("dotenv").config();
 
 const { Client, GatewayIntentBits } = require("discord.js");
-const { askClaude: handleMessage }  = require("./claude-agent");
+const { askClaude: handleMessage, getTcStatusFromExcel, getExcelPath, findLatestExcel } = require("./claude-agent");
 const contextLoader                 = require("./context-loader");
 const { handleSummary, startScheduler } = require("./daily-summary");
 const config                        = require("./config");
@@ -380,6 +380,30 @@ client.on("messageCreate", async (message) => {
       }
 
       default: {
+        if (intent === "browser_test" && tcId && !/^\s*retest\b/i.test(userMessage)) {
+          const excelPath = getExcelPath(context) || findLatestExcel();
+          const prevStatus = excelPath ? getTcStatusFromExcel(excelPath, tcId) : null;
+          if (prevStatus && /pass/i.test(prevStatus)) {
+            await message.reply(`${tcId} ผ่านแล้วครับ จะให้ Retest ไหมครับ? (yes/no)`);
+            waitingConfirm.add(discordUserId);
+            try {
+              const filter    = m => m.author.id === discordUserId && /^(y|yes|ใช่|n|no|ไม่)/i.test(m.content.trim());
+              const collected = await message.channel.awaitMessages({ filter, max: 1, time: 30000, errors: ["time"] });
+              const answer    = collected.first().content.trim();
+              if (!/^(y|yes|ใช่)/i.test(answer)) {
+                await message.channel.send("รับทราบครับ ไม่ retest");
+                waitingConfirm.delete(discordUserId);
+                break;
+              }
+            } catch (e) {
+              await message.channel.send("หมดเวลา 30 วินาที ยกเลิก retest");
+              waitingConfirm.delete(discordUserId);
+              break;
+            }
+            waitingConfirm.delete(discordUserId);
+          }
+        }
+
         const reply = await handleMessage(
           userMessage,
           discordUserId,

@@ -861,6 +861,46 @@ async function readTestCasesFromExcel(filePath, tcFilter = null) {
   return testCases;
 }
 
+function getTcStatusFromExcel(excelPath, tcId) {
+  if (!excelPath || !fs.existsSync(excelPath) || !tcId) return null;
+  const script = path.join(os.tmpdir(), "qa_read_status.py");
+  fs.writeFileSync(script, [
+    "# -*- coding: utf-8 -*-",
+    "import sys, io",
+    "sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')",
+    "import openpyxl",
+    `wb = openpyxl.load_workbook(r'${excelPath.replace(/\\/g, "\\\\")}', data_only=True)`,
+    "ws = wb['Test Case']",
+    "header_row = 4",
+    "tc_col = status_col = None",
+    "for cell in ws[header_row]:",
+    "    v = str(cell.value or '')",
+    "    if 'Test Case' in v and 'ID' in v: tc_col = cell.column",
+    "    if 'Scenario' in v and 'Status' in v: status_col = cell.column",
+    "if not tc_col or not status_col:",
+    "    print('')",
+    "    sys.exit(0)",
+    `target = '${tcId.replace(/'/g, "\\'")}'`,
+    "found = ''",
+    "for row in ws.iter_rows(min_row=header_row+1):",
+    "    tc = str(row[tc_col-1].value or '').strip()",
+    "    if tc.lower() == target.lower():",
+    "        found = str(row[status_col-1].value or '').strip()",
+    "        break",
+    "print(found)",
+  ].join("\n"), "utf8");
+  try {
+    const out = execSync(`${PYTHON} "${script}"`, {
+      encoding: "utf8",
+      env: { ...process.env, PYTHONIOENCODING: "utf-8", PYTHONUTF8: "1" },
+    });
+    return out.trim() || null;
+  } catch (e) {
+    console.error("getTcStatusFromExcel error:", e.message);
+    return null;
+  }
+}
+
 async function findExistingDefect(tcId, projectKey = "SR") {
   const jql = `project = "${projectKey}" AND summary ~ "[DEFECT] ${tcId}" AND status not in (Done, Closed, Resolved) ORDER BY created DESC`;
   try {
@@ -1258,4 +1298,4 @@ async function handleMessage(userMessage, discordUserId, fileUrl = null, fileNam
   }
 }
 
-module.exports = { askClaude: handleMessage };
+module.exports = { askClaude: handleMessage, getTcStatusFromExcel, getExcelPath, findLatestExcel };
