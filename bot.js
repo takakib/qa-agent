@@ -440,6 +440,7 @@ client.on("messageCreate", async (message) => {
 
       default: {
         if (intent === "browser_test" && tcId && !/^\s*retest\b/i.test(userMessage)) {
+          console.log('[DEBUG] excelPath:', getExcelPath(context), 'tcId:', tcId);
           const excelPath = getExcelPath(context) || findLatestExcel();
           const prevStatus = excelPath ? getTcStatusFromExcel(excelPath, tcId) : null;
           if (prevStatus && /pass/i.test(prevStatus)) {
