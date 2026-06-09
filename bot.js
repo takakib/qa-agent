@@ -374,6 +374,49 @@ client.on("messageCreate", async (message) => {
         break;
       }
 
+      case "add_project": {
+        waitingConfirm.add(discordUserId);
+        const askStep = async (promptText) => {
+          await message.channel.send(promptText);
+          const filter    = m => m.author.id === discordUserId && m.content.trim().length > 0;
+          const collected = await message.channel.awaitMessages({ filter, max: 1, time: 30000, errors: ["time"] });
+          return collected.first().content.trim();
+        };
+        try {
+          await message.reply("📝 เริ่มเพิ่ม project ใหม่ครับ (ยกเลิกอัตโนมัติถ้าเงียบเกิน 30 วินาที)");
+          const projectKey = await askStep("**1/4** ชื่อ project ครับ (เช่น UM, BOSS)");
+          const jiraKey    = await askStep("**2/4** Jira Key ครับ (เช่น SR8)");
+          const epicId     = await askStep("**3/4** Epic ID ครับ (เช่น SR8-100)");
+          const appUrl     = await askStep("**4/4** App URL ครับ");
+
+          const result = contextLoader.addProject({
+            key:     projectKey,
+            jiraKey: jiraKey,
+            epicId:  epicId,
+            appUrl:  appUrl,
+          });
+          await message.channel.send([
+            `✅ เพิ่ม project **${result.key}** สำเร็จแล้วครับ`,
+            `• Jira Key: ${jiraKey}`,
+            `• Epic ID: ${epicId}`,
+            `• App URL: ${appUrl}`,
+            ``,
+            `พิมพ์ \`สลับไป project ${result.key}\` เพื่อเริ่มใช้ได้เลยครับ`,
+          ].join("\n"));
+          contextLoader.logAction(discordUserId, "add_project", { project: result.key });
+        } catch (err) {
+          if (err.message?.includes("time") || err.size === 0) {
+            await message.channel.send("⏰ หมดเวลา 30 วินาที ยกเลิกการเพิ่ม project ครับ");
+          } else {
+            console.error("add_project error:", err);
+            await message.channel.send(`❌ เกิดข้อผิดพลาดครับ: ${err.message}`);
+          }
+        } finally {
+          waitingConfirm.delete(discordUserId);
+        }
+        break;
+      }
+
       case "jira_toggle": {
         const onOff  = /jira\s+on/i.test(userMessage);
         const result = contextLoader.toggleJira(discordUserId, onOff);

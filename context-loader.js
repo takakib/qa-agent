@@ -57,7 +57,7 @@ const INTENT_PATTERNS = [
   { pattern: /มีงาน|มี task|งานวันนี้|to.?do/i,                               intent: "jira_tasks" },
   { pattern: /สลับ.*project|switch.*project|ใช้\s*project|เปลี่ยน.*project/i, intent: "switch_project" },
   { pattern: /project ทั้งหมด|list.*project|มี project/i,                     intent: "list_projects" },
-  { pattern: /เพิ่ม.*project|add.*project|สร้าง.*project/i,                   intent: "add_project" },
+  { pattern: /(?:เพิ่ม|สร้าง|add|new)\s*project/i,                            intent: "add_project" },
   { pattern: /สรุปวันนี้|summary.*วัน|ทำอะไรไปบ้าง/i,                        intent: "daily_summary" },
   { pattern: /วันนี้มีอะไร|today.*งาน|งานวันนี้/i,                            intent: "what_today" },
   { pattern: /พรุ่งนี้มีอะไร|tomorrow|งานพรุ่งนี้/i,                          intent: "what_tomorrow" },
