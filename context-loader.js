@@ -78,8 +78,8 @@ function extractTcId(message) {
 }
 
 function extractProjectName(message) {
-  const match = message.match(/project\s+(\w+)|สลับ(?:ไป)?\s+(\w+)|ใช้\s+(\w+)/i);
-  return match ? (match[1] || match[2] || match[3]).toUpperCase() : null;
+  const match = message.match(/project\s+(\w+)|สลับ(?:ไป)?\s+(?!project\b)(\w+)|ใช้\s+(\w+)|ชื่อ\s+(\w+)/i);
+  return match ? (match[1] || match[2] || match[3] || match[4]).toUpperCase() : null;
 }
 
 function buildContext(userId, intent, memory) {

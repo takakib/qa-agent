@@ -387,7 +387,8 @@ client.on("messageCreate", async (message) => {
           const projectKey = await askStep("**1/4** ชื่อ project ครับ (เช่น UM, BOSS)");
           const jiraKey    = await askStep("**2/4** Jira Key ครับ (เช่น SR8)");
           const epicId     = await askStep("**3/4** Epic ID ครับ (เช่น SR8-100)");
-          const appUrl     = await askStep("**4/4** App URL ครับ");
+          const appUrlRaw  = await askStep("**4/4** App URL ครับ");
+          const appUrl     = appUrlRaw.replace(/^\s*app\s*url\s*[:：]\s*/i, "").trim();
 
           const result = contextLoader.addProject({
             key:     projectKey,
