@@ -392,7 +392,7 @@ Node modules path: ${path.join(__dirname, "node_modules")}
    - PASS: screenshot แล้ว process.exit(0)
    - FAIL: console.error("FAIL: เหตุผล")  screenshot แล้ว process.exit(1)
 6. ตอบเฉพาะ JavaScript code เท่านั้น ห้าม markdown
-7. ใช้ selector ทุกกรณี ให้ใช้ getByPlaceholder, getByText, getByRole, getByLabel แทน encoding ที่อาจเปลี่ยนได้ ไม่ใช้ CSS selector เท่านั้น
+7. ใช้ selector ทุกกรณี ให้ใช้ getByText, getByRole, getByLabel แทน encoding ที่อาจเปลี่ยนได้ ไม่ใช้ CSS selector เท่านั้น ห้ามใช้ getByPlaceholder ในการ login ให้ใช้ keyboard.type เท่านั้น
 
 ข้อมูล UI จริงของระบบ (ต้องอ่านและทำตามนี้):
 
