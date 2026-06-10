@@ -499,6 +499,7 @@ client.on("messageCreate", async (message) => {
                 waitingConfirm.delete(discordUserId);
                 break;
               }
+              processedIds.add(collected.first().id);
             } catch (e) {
               await message.channel.send("หมดเวลา 30 วินาที ยกเลิก retest");
               waitingConfirm.delete(discordUserId);
