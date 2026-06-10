@@ -35,7 +35,11 @@ function getTcStatusFromExcel(excelPath, tcId) {
     "import sys, io",
     "sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')",
     "import openpyxl",
-    `wb = openpyxl.load_workbook(r'${excelPath.replace(/\\/g, "\\\\")}', data_only=True)`,
+    "try:",
+    `    wb = openpyxl.load_workbook(r'${excelPath.replace(/\\/g, "\\\\")}', data_only=True)`,
+    "except Exception as e:",
+    "    print('')",
+    "    sys.exit(0)",
     "ws = wb['Test Case']",
     "header_row = 3",
     "tc_col = status_col = None",
@@ -165,6 +169,7 @@ client.once("clientReady", (c) => {
 });
 
 client.on("messageCreate", async (message) => {
+  try {
   if (message.author.bot) return;
 
   if (processedIds.has(message.id)) {
@@ -610,6 +615,9 @@ client.on("messageCreate", async (message) => {
   } catch (err) {
     console.error("Error:", err);
     await message.reply(`❌ เกิดข้อผิดพลาดครับ: ${err.message}`).catch(() => {});
+  }
+  } catch (outerErr) {
+    console.error("messageCreate unhandled error:", outerErr);
   }
 });
 
