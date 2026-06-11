@@ -60,7 +60,7 @@ function readExcelProgress(excelPath) {
     "import sys, io, json",
     "sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')",
     "import pandas as pd",
-    `df = pd.read_excel(r'${excelPath.replace(/\\/g, "\\\\")}', sheet_name='Test Case', header=3)`,
+    `df = pd.read_excel(r'${excelPath.replace(/\\/g, "\\\\")}', sheet_name='Test Case', header=2)`,
     "total = pass_count = fail_count = not_run = 0",
     "for i, row in df.iterrows():",
     "    tc_id = str(row.get('Test Case\\nID', '') or '').strip()",
@@ -114,7 +114,7 @@ function buildSummaryData(userId, range = "today") {
   const filterFn = range === "week" ? isThisWeek : isToday;
   const entries  = log.filter(e => e.userId === userId && filterFn(e.ts));
 
-  const tests       = entries.filter(e => e.action === "test" || e.action === "retest");
+  const tests       = entries.filter(e => e.action === "browser_test" || e.action === "retest");
   const jiraActions = entries.filter(e => ["jira_tasks","jira_overdue","update_issue"].includes(e.action));
   const switches    = entries.filter(e => e.action === "switch_project");
   const generals    = entries.filter(e => e.action === "general");
