@@ -436,7 +436,7 @@ LOGOUT (do before every process.exit):
 
 NAVIGATION (ใช้ goto URL โดยตรง อย่าคลิก sidebar):
 - จัดการผู้ใช้งาน (User Management):
-  await page.goto('${appUrl}'.replace(/\\/$/, '') + '/user-management');
+  await page.goto('${appUrl}'.replace(/\\/$/, '') + '/dashboard/user-management');
   await page.waitForLoadState('networkidle');
   await page.waitForTimeout(2000);
 - คลิก tab Roles (ใช้ evaluate เสมอ ห้ามใช้ filter hasText ภาษาไทย):
@@ -461,25 +461,14 @@ ADD ROLE MODAL:
   await page.locator('button').filter({ hasText: /เพิ่ม Role/ }).click();
   await page.waitForSelector('div[role="dialog"]', { state: 'visible' });
   await page.waitForTimeout(500);
-- กรอกชื่อ Role (ไทย) ผ่าน id ตรง:
-  await page.locator('#input-\\u0e0a\\u0e37\\u0e48\\u0e2d-role-\\(\\u0e44\\u0e17\\u0e22\\)').click();
+- กรอกชื่อ Role (ไทย) ผ่าน id จริงของ element ด้วย keyboard.type:
+  await page.locator('[id="input-role-name-(thai)"]').click();
   await page.keyboard.type('ชื่อ Role ที่ต้องการ', { delay: 50 });
-  หรือใช้ evaluate แทน:
-  await page.evaluate((val) => {
-    const el = document.getElementById('input-ชื่อ-role-(ไทย)');
-    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-    setter.call(el, val);
-    el.dispatchEvent(new Event('input', { bubbles: true }));
-    el.dispatchEvent(new Event('change', { bubbles: true }));
-  }, 'ค่าที่ต้องการ');
-- กรอกชื่อ Role (อังกฤษ) ผ่าน evaluate เช่น:
-  await page.evaluate((val) => {
-    const el = document.getElementById('input-ชื่อ-role-(อังกฤษ)');
-    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-    setter.call(el, val);
-    el.dispatchEvent(new Event('input', { bubbles: true }));
-    el.dispatchEvent(new Event('change', { bubbles: true }));
-  }, 'ค่าที่ต้องการ');
+  await page.waitForTimeout(300);
+- กรอกชื่อ Role (อังกฤษ) ผ่าน id จริงของ element ด้วย keyboard.type:
+  await page.locator('[id="input-role-name-(english)"]').click();
+  await page.keyboard.type('ชื่อ Role ที่ต้องการ', { delay: 50 });
+  await page.waitForTimeout(300);
 - Status toggle: ON by default หาก ไม่ต้องการ (aria-pressed="true")
 - Checkbox permissions (เฉพาะใน modal, index เริ่มจาก 0):
   nth(0) = แดชบอร์ด
@@ -493,13 +482,15 @@ ADD ROLE MODAL:
     const boxes = document.querySelectorAll('div[role="dialog"] input[type="checkbox"]');
     if (boxes[idx]) boxes[idx].click();
   }, 1); // เปลี่ยน index ตาม permission ที่ต้องการ
-- บันทึก (ปุ่ม เพิ่ม Role ใน modal):
+- บันทึก (ปุ่ม Save ใน modal — ข้อความปุ่มจริงคือ 'Add Role' ภาษาอังกฤษ ใช้ includes รองรับทั้งสองภาษา):
   await page.evaluate(() => {
     const btns = [...document.querySelectorAll('div[role="dialog"] button')];
-    const btn = btns.find(b => b.textContent.trim() === 'เพิ่ม Role' && !b.disabled);
+    const btn = btns.find(b => (b.textContent.includes('Add Role') || b.textContent.includes('เพิ่ม Role')) && !b.disabled);
     if (btn) btn.click();
   });
-  await page.waitForSelector('div[role="dialog"]', { state: 'detached', timeout: 10000 });
+  await page.waitForTimeout(3000);
+  // หมายเหตุ: ถ้าชื่อ Role ซ้ำ ระบบ reject ด้วย HTTP 409 -> SweetAlert "Request failed with status code 409"
+  //          ถ้าสำเร็จ dialog จะปิดเอง อย่าใช้ waitForSelector detached เป็น hard requirement
 
 ADD GROUP MODAL:
 - เปิด modal:
