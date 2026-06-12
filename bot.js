@@ -534,6 +534,15 @@ client.on("messageCreate", async (message) => {
         if (tcId)        logExtras.tc      = tcId;
         if (projectName) logExtras.project = projectName;
         if (intent !== "unknown") logExtras.note = userMessage.slice(0, 80);
+        // เพิ่ม result pass/fail สำหรับ browser_test เพื่อให้ daily summary นับ Pass/Fail ได้ถูกต้อง
+        // (อ่านจาก reply รูปแบบ "✅ Pass: N | ❌ Fail: M | ⚠️ Error: K")
+        if (intent === "browser_test" || intent === "retest") {
+          const passCount = parseInt((reply.match(/Pass:\s*(\d+)/)  || [])[1] || "0", 10);
+          const failCount = parseInt((reply.match(/Fail:\s*(\d+)/)  || [])[1] || "0", 10);
+          const errCount  = parseInt((reply.match(/Error:\s*(\d+)/) || [])[1] || "0", 10);
+          const passed    = passCount > 0 && failCount === 0 && errCount === 0;
+          logExtras.result = passed ? "pass" : "fail";
+        }
         contextLoader.logAction(discordUserId, intent, logExtras);
 
         if (retestMatch) {
