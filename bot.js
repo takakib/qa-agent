@@ -4,7 +4,7 @@
 require("dotenv").config();
 
 const { Client, GatewayIntentBits } = require("discord.js");
-const { askClaude: handleMessage }  = require("./claude-agent");
+const { askClaude: handleMessage, handleRetestReport } = require("./claude-agent");
 const contextLoader                 = require("./context-loader");
 const { handleSummary, startScheduler } = require("./daily-summary");
 const config                        = require("./config");
@@ -478,6 +478,64 @@ client.on("messageCreate", async (message) => {
       case "daily_summary": {
         const sumReply = await handleSummary(discordUserId, context);
         await sendLong(message, sumReply);
+        break;
+      }
+
+      case "retest_report": {
+        await message.channel.sendTyping();
+        const report = await handleRetestReport(context);
+        if (report.error) { await message.reply(report.error); break; }
+
+        const defects = report.defects || [];
+        if (defects.length === 0) {
+          await message.reply(`✅ ไม่มี Defect ค้างสำหรับ project **${report.projectKey}** ครับ — ไม่มี TC ที่ต้อง retest`);
+          break;
+        }
+
+        const listLines = defects.map((d, i) => `${i + 1}. **${d.tc}** — ${d.key} \`${d.status}\``);
+        await sendLong(message, [
+          `🐞 **Defect ค้างของ project ${report.projectKey} — ${defects.length} TC**`,
+          listLines.join("\n"),
+          ``,
+          `จะถามทีละ TC ว่าจะ retest ไหมนะครับ (yes/no ภายใน 60 วินาที)`,
+        ].join("\n"));
+
+        // ถามทีละ TC — yes = retest, no/ข้าม = ไป TC ถัดไป
+        waitingConfirm.add(discordUserId);
+        try {
+          for (const d of defects) {
+            await message.channel.send(`🔁 retest **${d.tc}** (${d.key})? พิมพ์ \`yes\` เพื่อ retest หรือ \`no\` เพื่อข้ามครับ`);
+            let answer;
+            try {
+              const filter    = m => m.author.id === discordUserId && /^(y|yes|ใช่|n|no|ไม่|skip|ข้าม)\s*$/i.test(m.content.trim());
+              const collected = await message.channel.awaitMessages({ filter, max: 1, time: 60000, errors: ["time"] });
+              answer = collected.first().content.trim();
+              processedIds.add(collected.first().id);
+            } catch (e) {
+              await message.channel.send(`⏰ หมดเวลา 60 วินาที — หยุด retest report ครับ`);
+              break;
+            }
+            if (/^(y|yes|ใช่)/i.test(answer)) {
+              await message.channel.sendTyping();
+              await message.channel.send(`⏳ กำลัง retest ${d.tc} ครับ...`);
+              const retestReply = await handleMessage(
+                `retest ${d.tc}`,
+                discordUserId,
+                null,
+                null,
+                sendProgress,
+                { systemPrompt, context }
+              );
+              await sendLong(message, retestReply);
+              contextLoader.logAction(discordUserId, "retest", { tc: d.tc, note: `retest report ${d.tc}` });
+            } else {
+              await message.channel.send(`⏭️ ข้าม ${d.tc} ครับ`);
+            }
+          }
+          await message.channel.send(`✅ จบ retest report แล้วครับ`);
+        } finally {
+          waitingConfirm.delete(discordUserId);
+        }
         break;
       }
 

@@ -12,6 +12,7 @@ const LOG_KEEP_DAYS = 7;
 const INTENT_CONTEXT_MAP = {
   browser_test:    ["user", "activeProject", "scriptCache"],
   retest:          ["user", "activeProject", "recentLog"],
+  retest_report:   ["user", "activeProject", "recentLog"],
   test_history:    ["user", "activeProject", "recentLog"],
   jira_status:     ["user", "activeProject"],
   jira_toggle:     ["user", "activeProject"],
@@ -47,6 +48,7 @@ function trimLog(log) {
 }
 
 const INTENT_PATTERNS = [
+  { pattern: /retest\s*report|รายงาน\s*retest/i,                               intent: "retest_report" },
   { pattern: /\bretest\s+TC_\S+/i,                                             intent: "retest" },
   { pattern: /\btest\s+TC_\S+/i,                                               intent: "browser_test" },
   { pattern: /clear[\s_]?cache/i,                                               intent: "clear_cache" },

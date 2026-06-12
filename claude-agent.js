@@ -954,6 +954,34 @@ async function findLatestDefect(tcId, projectKey = "SR") {
   } catch (e) { console.error("findLatestDefect error:", e.message); return null; }
 }
 
+// ดึง Defect card ที่ค้างอยู่ (summary มี [DEFECT] และ status ยังไม่ Done) แล้ว map กลับเป็นรายการ TC
+// คืน { projectKey, defects: [{ key, tc, summary, status }] } หรือ { error }
+async function handleRetestReport(ctx) {
+  const projectKey = getJiraKey(ctx);
+  const jql = `project = "${projectKey}" AND summary ~ "[DEFECT]" AND status not in (Done, Closed, Resolved) ORDER BY created DESC`;
+  let issues;
+  try {
+    issues = await jiraRequestAll(jql, ["summary", "status", "assignee", "priority"], 200);
+  } catch (e) {
+    console.error("handleRetestReport error:", e.message);
+    return { error: `❌ ดึง Defect จาก Jira ล้มเหลว: ${e.message}` };
+  }
+  // issues เรียงตาม created DESC แล้ว — เก็บ defect ล่าสุดเพียง 1 อันต่อ TC
+  const seen    = new Set();
+  const defects = [];
+  for (const i of issues) {
+    const summary = i.fields?.summary || "";
+    if (!/\[DEFECT\]/i.test(summary)) continue;
+    const tcMatch = summary.match(/TC_[A-Z0-9_]+/i);
+    if (!tcMatch) continue;
+    const tc = tcMatch[0].toUpperCase();
+    if (seen.has(tc)) continue;
+    seen.add(tc);
+    defects.push({ key: i.key, tc, summary, status: i.fields?.status?.name || "?" });
+  }
+  return { projectKey, defects };
+}
+
 function calcOverdueDays(d) {
   if (!d) return null;
   const today = new Date(); today.setHours(0, 0, 0, 0);
@@ -1335,4 +1363,4 @@ async function handleMessage(userMessage, discordUserId, fileUrl = null, fileNam
   }
 }
 
-module.exports = { askClaude: handleMessage, getTcStatusFromExcel, getExcelPath, findLatestExcel };
+module.exports = { askClaude: handleMessage, getTcStatusFromExcel, getExcelPath, findLatestExcel, handleRetestReport };
