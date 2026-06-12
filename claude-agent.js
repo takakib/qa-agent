@@ -69,11 +69,13 @@ function getJiraOn(ctx)      { return ctx?.activeProject?.jiraOn   ?? jiraUpdate
 function getMyAccountId(ctx) { return ctx?.user?.jiraAccountId     || MY_JIRA_ACCOUNT_ID_DEFAULT; }
 function getExcelPath(ctx)   { return ctx?.activeProject?.excelPath || null; }
 
-function jiraRequest(jql, fields = ["summary","status","assignee","priority","duedate"], startAt = 0, maxResults = 100) {
+function jiraRequest(jql, fields = ["summary","status","assignee","priority","duedate"], startAt = 0, maxResults = 100, pageToken = null) {
   return new Promise((resolve, reject) => {
     const auth   = Buffer.from(JIRA_EMAIL + ":" + JIRA_TOKEN).toString("base64");
     const url    = new URL(JIRA_HOST);
     const params = new URLSearchParams({ jql, startAt, maxResults, fields: fields.join(",") });
+    // /search/jql ใช้ nextPageToken ในการเลื่อนหน้า (startAt ถูกเพิกเฉย) จึงต้องส่ง token เมื่อมี
+    if (pageToken) params.set("nextPageToken", pageToken);
     const req = https.request({
       hostname: url.hostname,
       path: `/rest/api/3/search/jql?${params.toString()}`,
@@ -93,16 +95,16 @@ function jiraRequest(jql, fields = ["summary","status","assignee","priority","du
 }
 
 async function jiraRequestAll(jql, fields = ["summary","status","assignee","priority","duedate"], maxTotal = 500) {
-  let allIssues = [], startAt = 0;
+  let allIssues = [], pageToken = null;
   const pageSize = 100;
   while (true) {
-    const data   = await jiraRequest(jql, fields, startAt, pageSize);
+    const data   = await jiraRequest(jql, fields, 0, pageSize, pageToken);
     const issues = data.issues || [];
-    if (issues.length === 0) break;
     allIssues = allIssues.concat(issues);
     console.log(`Fetched ${allIssues.length} issues`);
-    if (allIssues.length >= maxTotal || issues.length < pageSize) break;
-    startAt += pageSize;
+    // /search/jql คืน isLast=true เมื่อหมดหน้า (ไม่มี total) — เลื่อนหน้าด้วย nextPageToken
+    if (data.isLast === true || !data.nextPageToken || allIssues.length >= maxTotal) break;
+    pageToken = data.nextPageToken;
   }
   console.log(`Total fetched: ${allIssues.length} issues`);
   return allIssues;
