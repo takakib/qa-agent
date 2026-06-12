@@ -988,6 +988,43 @@ async function handleRetestReport(ctx) {
   return { projectKey, defects, others };
 }
 
+// ดึงงานที่ status = TO TEST ของ project แล้วจัดกลุ่มตาม Epic (parent field)
+// แต่ละ Epic แบ่งเป็น mine (assignee = myAccountId) กับ others พร้อมสรุป priority รวมทั้งหมด
+// คืน { projectKey, total, epics: [{ key, name, mine, others }], priorityCount } หรือ { error }
+async function handleToTestReport(ctx) {
+  const projectKey = getJiraKey(ctx);
+  const myId       = getMyAccountId(ctx);
+  const jql = `status = "TO TEST" AND project = "${projectKey}" ORDER BY priority DESC, updated DESC`;
+  let issues;
+  try {
+    issues = await jiraRequestAll(jql, ["summary", "assignee", "priority", "parent"], 300);
+  } catch (e) {
+    console.error("handleToTestReport error:", e.message);
+    return { error: `❌ ดึงงาน TO TEST จาก Jira ล้มเหลว: ${e.message}` };
+  }
+
+  const epics         = new Map(); // epicKey -> { key, name, mine: [], others: [] }
+  const priorityCount = {};        // ชื่อ priority -> จำนวนรวม
+  for (const i of issues) {
+    const parent   = i.fields?.parent;
+    const epicKey  = parent?.key || "NO_EPIC";
+    const epicName = parent?.fields?.summary || "(ไม่มี Epic)";
+    if (!epics.has(epicKey)) epics.set(epicKey, { key: epicKey, name: epicName, mine: [], others: [] });
+
+    const item = {
+      key:      i.key,
+      summary:  i.fields?.summary || "",
+      priority: i.fields?.priority?.name || "N/A",
+      assignee: i.fields?.assignee?.displayName || "ไม่มี assignee",
+    };
+    const isMine = i.fields?.assignee?.accountId === myId;
+    epics.get(epicKey)[isMine ? "mine" : "others"].push(item);
+    priorityCount[item.priority] = (priorityCount[item.priority] || 0) + 1;
+  }
+
+  return { projectKey, total: issues.length, epics: [...epics.values()], priorityCount };
+}
+
 function calcOverdueDays(d) {
   if (!d) return null;
   const today = new Date(); today.setHours(0, 0, 0, 0);
@@ -1369,4 +1406,4 @@ async function handleMessage(userMessage, discordUserId, fileUrl = null, fileNam
   }
 }
 
-module.exports = { askClaude: handleMessage, getTcStatusFromExcel, getExcelPath, findLatestExcel, handleRetestReport };
+module.exports = { askClaude: handleMessage, getTcStatusFromExcel, getExcelPath, findLatestExcel, handleRetestReport, handleToTestReport };

@@ -4,7 +4,7 @@
 require("dotenv").config();
 
 const { Client, GatewayIntentBits } = require("discord.js");
-const { askClaude: handleMessage, handleRetestReport } = require("./claude-agent");
+const { askClaude: handleMessage, handleRetestReport, handleToTestReport } = require("./claude-agent");
 const contextLoader                 = require("./context-loader");
 const { handleSummary, startScheduler } = require("./daily-summary");
 const config                        = require("./config");
@@ -547,6 +547,42 @@ client.on("messageCreate", async (message) => {
         } finally {
           waitingConfirm.delete(discordUserId);
         }
+        break;
+      }
+
+      case "to_test_report": {
+        await message.channel.sendTyping();
+        const report = await handleToTestReport(context);
+        if (report.error) { await message.reply(report.error); break; }
+        if (report.total === 0) {
+          await message.reply(`✅ ไม่มีงานสถานะ TO TEST สำหรับ project **${report.projectKey}** ครับ`);
+          break;
+        }
+
+        const lines = [`🧪 **งาน TO TEST ของ project ${report.projectKey} — ${report.total} งาน**`];
+
+        // สรุป priority รวม (เรียงจากสูงไปต่ำ)
+        const prioOrder   = { Highest: 0, High: 1, Medium: 2, Low: 3, Lowest: 4 };
+        const prioSummary = Object.entries(report.priorityCount)
+          .sort((a, b) => (prioOrder[a[0]] ?? 9) - (prioOrder[b[0]] ?? 9))
+          .map(([p, c]) => `${p}: ${c}`)
+          .join(" | ");
+        lines.push(`📊 Priority รวม — ${prioSummary}`, ``);
+
+        // แต่ละ Epic แยก ของฉัน / คนอื่น
+        for (const ep of report.epics) {
+          lines.push(`**📦 ${ep.key} — ${ep.name}**  (ของฉัน ${ep.mine.length} / คนอื่น ${ep.others.length})`);
+          if (ep.mine.length) {
+            lines.push(`  👤 ของฉัน:`);
+            ep.mine.forEach(it => lines.push(`    • ${it.key} \`${it.priority}\` — ${it.summary.slice(0, 55)}`));
+          }
+          if (ep.others.length) {
+            lines.push(`  👥 คนอื่น:`);
+            ep.others.forEach(it => lines.push(`    • ${it.key} \`${it.priority}\` (${it.assignee}) — ${it.summary.slice(0, 45)}`));
+          }
+          lines.push(``);
+        }
+        await sendLong(message, lines.join("\n"));
         break;
       }
 
