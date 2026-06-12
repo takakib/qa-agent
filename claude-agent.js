@@ -573,6 +573,51 @@ MAPPING คำแปล:
 `;
 }
 
+// แปลง Playwright error (stderr/stack) เป็นข้อความภาษาไทยที่อ่านง่าย
+// ผลลัพธ์: '- ขั้นตอนที่ล้มเหลว: XXX\n- สาเหตุ: YYY\n- timeout: ZZZ'
+function formatFailReason(errorMsg) {
+  const msg = String(errorMsg || "");
+
+  // 1) ชื่อ action ที่ fail เช่น page.goto, locator.click, page.waitForSelector, locator.fill
+  const actionMatch = msg.match(/\b((?:page|locator|frame|elementHandle|keyboard|mouse|browserContext|browser)\.[a-zA-Z]+)\s*:/);
+  let action = actionMatch ? actionMatch[1] : null;
+
+  // 2) selector / element ที่หาไม่เจอ
+  let target = null;
+  const locatorMatch  = msg.match(/locator\((['"`])([\s\S]*?)\1\)/);
+  const selectorMatch = msg.match(/(?:waitForSelector|getBy[A-Za-z]+|\$\$?|querySelector(?:All)?)\((['"`])([\s\S]*?)\2\)/);
+  const waitingMatch  = msg.match(/waiting for ([^\n]+)/);
+  if (locatorMatch)       target = locatorMatch[2];
+  else if (selectorMatch) target = selectorMatch[3];
+  else if (waitingMatch)  target = waitingMatch[1].trim();
+
+  // 3) timeout
+  const timeoutMatch = msg.match(/Timeout\s+(\d+)\s*ms/i);
+  const timeout = timeoutMatch ? `${timeoutMatch[1]}ms` : null;
+
+  // 4) สาเหตุ (cause)
+  let cause;
+  const customFail = msg.match(/FAIL:\s*([^\n]+)/); // ข้อความ FAIL: จาก assertion ของสคริปต์เอง
+  if (/Timeout\s+\d+\s*ms\s+exceeded/i.test(msg)) {
+    cause = target ? `หา/รอ element ไม่เจอภายในเวลาที่กำหนด (${target})` : "รอ element ไม่เจอภายในเวลาที่กำหนด";
+  } else if (/net::ERR|ERR_CONNECTION|ENOTFOUND|ECONNREFUSED|ERR_NAME_NOT_RESOLVED/i.test(msg)) {
+    const netMatch = msg.match(/(net::[A-Z_]+|ERR_[A-Z_]+|E[A-Z]{3,})/);
+    cause = `เชื่อมต่อหน้าเว็บไม่สำเร็จ${netMatch ? ` (${netMatch[1]})` : ""}`;
+  } else if (customFail) {
+    cause = customFail[1].trim();
+  } else {
+    cause = (msg.split("\n").map(l => l.trim()).find(Boolean) || "ไม่ทราบสาเหตุ").slice(0, 200);
+  }
+
+  if (!action && customFail) action = "assertion (เงื่อนไขตรวจผล)";
+
+  return [
+    `- ขั้นตอนที่ล้มเหลว: ${action || "ไม่ระบุ"}`,
+    `- สาเหตุ: ${cause}`,
+    `- timeout: ${timeout || "-"}`,
+  ].join("\n");
+}
+
 async function handleBrowserTest(tcList, sendProgress, excelPath, ctx) {
   const results   = [];
   const defects   = [];
@@ -649,8 +694,9 @@ async function handleBrowserTest(tcList, sendProgress, excelPath, ctx) {
       passed = true;
     } catch (e) {
       passed     = false;
-      failReason = e.stderr || e.stdout || e.message || "Unknown error";
-      if (failReason.includes("Executable doesn't exist") || failReason.includes("browserType.launch")) {
+      const rawError = e.stderr || e.stdout || e.message || "Unknown error";
+      failReason = formatFailReason(rawError);
+      if (rawError.includes("Executable doesn't exist") || rawError.includes("browserType.launch")) {
         const cachePath = getCachePath(tc);
         if (fs.existsSync(cachePath)) fs.unlinkSync(cachePath);
         console.log(`[CACHE CLEARED] ${tc.tc_id}`);
