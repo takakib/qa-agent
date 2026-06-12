@@ -487,18 +487,29 @@ client.on("messageCreate", async (message) => {
         if (report.error) { await message.reply(report.error); break; }
 
         const defects = report.defects || [];
-        if (defects.length === 0) {
-          await message.reply(`✅ ไม่มี Defect ค้างสำหรับ project **${report.projectKey}** ครับ — ไม่มี TC ที่ต้อง retest`);
+        const others  = report.others  || [];
+        if (defects.length === 0 && others.length === 0) {
+          await message.reply(`✅ ไม่มี card ค้างในสถานะ FIXING/To Test/Retest สำหรับ project **${report.projectKey}** ครับ`);
           break;
         }
 
-        const listLines = defects.map((d, i) => `${i + 1}. **${d.tc}** — ${d.key} \`${d.status}\``);
-        await sendLong(message, [
-          `🐞 **Defect ค้างของ project ${report.projectKey} — ${defects.length} TC**`,
-          listLines.join("\n"),
-          ``,
-          `จะถามทีละ TC ว่าจะ retest ไหมนะครับ (yes/no ภายใน 60 วินาที)`,
-        ].join("\n"));
+        // แสดงรายการ — แยก TC ที่ retest ได้ กับ "งานอื่น" ที่ไม่มี TC
+        const reportLines = [`🐞 **Card ค้างของ project ${report.projectKey}**`];
+        if (defects.length) {
+          reportLines.push(``, `**🔁 retest ได้ — ${defects.length} TC:**`);
+          defects.forEach((d, i) => reportLines.push(`${i + 1}. **${d.tc}** — ${d.key} \`${d.status}\``));
+        }
+        if (others.length) {
+          reportLines.push(``, `**📋 งานอื่น — ${others.length} card (ไม่มี TC ในชื่อ ตัดสินใจเอง):**`);
+          others.forEach((o, i) => reportLines.push(`${i + 1}. ${o.key} \`${o.status}\` — ${o.summary.slice(0, 60)}`));
+        }
+        await sendLong(message, reportLines.join("\n"));
+
+        if (defects.length === 0) {
+          await message.reply(`ไม่มี TC ที่ retest อัตโนมัติได้ครับ (มีแต่งานอื่น) — เลือกจัดการเองได้เลย`);
+          break;
+        }
+        await message.channel.send(`จะถามทีละ TC ว่าจะ retest ไหมนะครับ (yes/no ภายใน 60 วินาที)`);
 
         // ถามทีละ TC — yes = retest, no/ข้าม = ไป TC ถัดไป
         waitingConfirm.add(discordUserId);

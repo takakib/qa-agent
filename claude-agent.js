@@ -954,11 +954,13 @@ async function findLatestDefect(tcId, projectKey = "SR") {
   } catch (e) { console.error("findLatestDefect error:", e.message); return null; }
 }
 
-// ดึง card ที่กำลัง fix หรือรอ retest (status: FIXING / TO TEST / Retest / In Progress) แล้ว map กลับเป็นรายการ TC
-// คืน { projectKey, defects: [{ key, tc, summary, status }] } หรือ { error }
+// ดึง card ที่กำลัง fix หรือรอ retest (status: FIXING / TO TEST / Retest) แล้วแยก 2 กรณี
+//   - defects: card ที่มี TC_ ใน summary → ดึง TC ID มา retest อัตโนมัติได้
+//   - others : card ที่ไม่มี TC_ ใน summary → "งานอื่น" ให้ user ตัดสินใจเอง
+// คืน { projectKey, defects: [{ key, tc, summary, status }], others: [{ key, summary, status }] } หรือ { error }
 async function handleRetestReport(ctx) {
   const projectKey = getJiraKey(ctx);
-  const jql = `status in ("FIXING", "TO TEST", "Retest", "In Progress") AND project = "${projectKey}" ORDER BY updated DESC`;
+  const jql = `status in ("FIXING", "DEV DONE") AND project = "${projectKey}" ORDER BY updated DESC`;
   let issues;
   try {
     issues = await jiraRequestAll(jql, ["summary", "status", "assignee", "priority"], 200);
@@ -968,17 +970,22 @@ async function handleRetestReport(ctx) {
   }
   // issues เรียงตาม updated DESC แล้ว — เก็บ card ล่าสุดเพียง 1 อันต่อ TC
   const seen    = new Set();
-  const defects = [];
+  const defects = []; // card ที่มี TC_ ใน summary
+  const others  = []; // card ที่ไม่มี TC_ ใน summary
   for (const i of issues) {
     const summary = i.fields?.summary || "";
+    const status  = i.fields?.status?.name || "?";
     const tcMatch = summary.match(/TC_[A-Z0-9_]+/i);
-    if (!tcMatch) continue;
-    const tc = tcMatch[0].toUpperCase();
-    if (seen.has(tc)) continue;
-    seen.add(tc);
-    defects.push({ key: i.key, tc, summary, status: i.fields?.status?.name || "?" });
+    if (tcMatch) {
+      const tc = tcMatch[0].toUpperCase();
+      if (seen.has(tc)) continue;
+      seen.add(tc);
+      defects.push({ key: i.key, tc, summary, status });
+    } else {
+      others.push({ key: i.key, summary, status });
+    }
   }
-  return { projectKey, defects };
+  return { projectKey, defects, others };
 }
 
 function calcOverdueDays(d) {
