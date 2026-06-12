@@ -1005,7 +1005,10 @@ async function handleToTestReport(ctx) {
 
   const epics         = new Map(); // epicKey -> { key, name, mine: [], others: [] }
   const priorityCount = {};        // ชื่อ priority -> จำนวนรวม
+  const seenKeys      = new Set(); // กัน issue key ซ้ำ
   for (const i of issues) {
+    if (seenKeys.has(i.key)) continue; // เจอ key ซ้ำ → ข้าม
+    seenKeys.add(i.key);
     const parent   = i.fields?.parent;
     const epicKey  = parent?.key || "NO_EPIC";
     const epicName = parent?.fields?.summary || "(ไม่มี Epic)";
@@ -1022,7 +1025,7 @@ async function handleToTestReport(ctx) {
     priorityCount[item.priority] = (priorityCount[item.priority] || 0) + 1;
   }
 
-  return { projectKey, total: issues.length, epics: [...epics.values()], priorityCount };
+  return { projectKey, total: seenKeys.size, epics: [...epics.values()], priorityCount };
 }
 
 function calcOverdueDays(d) {
