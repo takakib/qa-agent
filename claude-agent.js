@@ -954,24 +954,23 @@ async function findLatestDefect(tcId, projectKey = "SR") {
   } catch (e) { console.error("findLatestDefect error:", e.message); return null; }
 }
 
-// ดึง Defect card ที่ค้างอยู่ (summary มี [DEFECT] และ status ยังไม่ Done) แล้ว map กลับเป็นรายการ TC
+// ดึง card ที่กำลัง fix หรือรอ retest (status: FIXING / TO TEST / Retest / In Progress) แล้ว map กลับเป็นรายการ TC
 // คืน { projectKey, defects: [{ key, tc, summary, status }] } หรือ { error }
 async function handleRetestReport(ctx) {
   const projectKey = getJiraKey(ctx);
-  const jql = `project = "${projectKey}" AND summary ~ "[DEFECT]" AND status not in (Done, Closed, Resolved) ORDER BY created DESC`;
+  const jql = `status in ("FIXING", "TO TEST", "Retest", "In Progress") AND project = "${projectKey}" ORDER BY updated DESC`;
   let issues;
   try {
     issues = await jiraRequestAll(jql, ["summary", "status", "assignee", "priority"], 200);
   } catch (e) {
     console.error("handleRetestReport error:", e.message);
-    return { error: `❌ ดึง Defect จาก Jira ล้มเหลว: ${e.message}` };
+    return { error: `❌ ดึง card จาก Jira ล้มเหลว: ${e.message}` };
   }
-  // issues เรียงตาม created DESC แล้ว — เก็บ defect ล่าสุดเพียง 1 อันต่อ TC
+  // issues เรียงตาม updated DESC แล้ว — เก็บ card ล่าสุดเพียง 1 อันต่อ TC
   const seen    = new Set();
   const defects = [];
   for (const i of issues) {
     const summary = i.fields?.summary || "";
-    if (!/\[DEFECT\]/i.test(summary)) continue;
     const tcMatch = summary.match(/TC_[A-Z0-9_]+/i);
     if (!tcMatch) continue;
     const tc = tcMatch[0].toUpperCase();
