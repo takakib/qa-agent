@@ -962,7 +962,7 @@ async function findLatestDefect(tcId, projectKey = "SR") {
 // คืน { projectKey, defects: [{ key, tc, summary, status }], others: [{ key, summary, status }] } หรือ { error }
 async function handleRetestReport(ctx) {
   const projectKey = getJiraKey(ctx);
-  const jql = `status in ("FIXING", "DEV DONE", "ENTRY GATE QA FAIL", "TO DO") AND project = "${projectKey}" ORDER BY updated DESC`;
+  const jql = `issuetype = Bug AND project = "${projectKey}" AND status not in (Done, Closed, Resolved) ORDER BY updated DESC`;
   let issues;
   try {
     issues = await jiraRequestAll(jql, ["summary", "status", "assignee", "priority"], 200);
