@@ -274,13 +274,34 @@ async function searchJiraUser(name) {
 }
 
 function findClaudeExe() {
-  const base     = path.join(process.env.LOCALAPPDATA, "Packages\\Claude_pzs8sxrjxfjjc\\LocalCache\\Roaming\\Claude\\claude-code");
-  const versions = fs.readdirSync(base).sort().reverse();
+  const localAppData = process.env.LOCALAPPDATA || "C:\\Users\\admin\\AppData\\Local";
+  const base = path.join(localAppData, "Packages\\Claude_pzs8sxrjxfjjc\\LocalCache\\Roaming\\Claude\\claude-code");
+
+  if (!fs.existsSync(base)) throw new Error(`ไม่พบโฟลเดอร์ claude-code: ${base}`);
+
+  // เปรียบเทียบเวอร์ชันแบบ semantic (numeric) ไม่ใช่ string sort
+  // เพื่อให้ "2.1.181" ถูกมองว่าใหม่กว่า "2.1.99" — รองรับการอัปเดตในอนาคต
+  const cmpVersion = (a, b) => {
+    const pa = a.split(".").map(n => parseInt(n, 10) || 0);
+    const pb = b.split(".").map(n => parseInt(n, 10) || 0);
+    for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+      const diff = (pa[i] || 0) - (pb[i] || 0);
+      if (diff !== 0) return diff;
+    }
+    return 0;
+  };
+
+  const versions = fs.readdirSync(base, { withFileTypes: true })
+    .filter(d => d.isDirectory() && /^\d+(\.\d+)*$/.test(d.name))  // เฉพาะโฟลเดอร์ที่เป็นเลขเวอร์ชัน
+    .map(d => d.name)
+    .sort(cmpVersion)
+    .reverse();  // ใหม่สุดก่อน
+
   for (const ver of versions) {
     const p = path.join(base, ver, "claude.exe");
     if (fs.existsSync(p)) return p;
   }
-  throw new Error("ไม่พบ claude.exe");
+  throw new Error(`ไม่พบ claude.exe ใน ${base} (สแกน ${versions.length} เวอร์ชัน)`);
 }
 
 const claudeExe = findClaudeExe();
