@@ -1105,9 +1105,9 @@ function issueLine(i) {
 //   20: QA IN PROGRESS     -> QA TESTING DONE
 //   24: QA TESTING DONE    -> WAITING FOR DEPLOY PROD
 const SUBTASK_DONE_CHAIN = [
-  { id: "16", label: "TO TEST → QA IN PROGRESS" },
-  { id: "20", label: "QA IN PROGRESS → QA TESTING DONE" },
-  { id: "24", label: "QA TESTING DONE → WAITING FOR DEPLOY PROD" },
+  { id: "16", from: "TO TEST",         label: "TO TEST → QA IN PROGRESS" },
+  { id: "20", from: "QA IN PROGRESS",  label: "QA IN PROGRESS → QA TESTING DONE" },
+  { id: "24", from: "QA TESTING DONE", label: "QA TESTING DONE → WAITING FOR DEPLOY PROD" },
 ];
 const SUBTASK_FINAL_STATUS = "WAITING FOR DEPLOY PROD";
 
@@ -1137,14 +1137,46 @@ async function fetchSubtasksOfStories(storyKeys) {
   return { subtasks: [...new Set(subtasks)], storySubMap };
 }
 
-// transition Sub-task ทุกตัวตามลำดับ 16 -> 20 -> 24 (จบที่ WAITING FOR DEPLOY PROD)
-// ถ้าขั้นใดขั้นหนึ่งของ issue นั้น fail จะหยุด chain ของ issue นั้นและนับเป็น failed
-// คืน { updated: [key,...], failed: [key,...] }
+// transition Sub-task ทุกตัวไปจนถึง WAITING FOR DEPLOY PROD
+// โดยเช็ค current status ของแต่ละตัวก่อน แล้วรันเฉพาะ transition ที่เหลือ (ไม่ใช่เริ่มที่ 16 ตลอด)
+//   TO TEST            → 16, 20, 24
+//   QA IN PROGRESS     → 20, 24
+//   QA TESTING DONE    → 24
+//   WAITING FOR DEPLOY PROD → ข้าม (ถึงปลายทางแล้ว)
+// คืน { updated: [key,...], failed: [key,...], skipped: [key,...] }
 async function transitionScenarioSubtasks(issueKeys) {
-  const updated = [], failed = [];
+  const updated = [], failed = [], skipped = [];
   for (const issueKey of issueKeys || []) {
+    // 1) เช็ค current status ก่อน
+    let statusName = "";
+    try {
+      const data = await jiraGet(`/rest/api/3/issue/${issueKey}?fields=status`);
+      statusName = (data.fields?.status?.name || "").trim();
+    } catch (e) {
+      console.error(`[transitionScenarioSubtasks] ${issueKey} ดึง status ล้มเหลว:`, e.message);
+      failed.push(issueKey);
+      continue;
+    }
+    const upper = statusName.toUpperCase();
+
+    // ถึงปลายทางแล้ว → ข้าม (ถือว่าพร้อม assign/comment)
+    if (upper === SUBTASK_FINAL_STATUS.toUpperCase()) {
+      console.log(`[transitionScenarioSubtasks] ${issueKey} อยู่ที่ "${statusName}" แล้ว — ข้าม transition`);
+      skipped.push(issueKey);
+      continue;
+    }
+
+    // 2) เลือกจุดเริ่มใน chain ตาม current status (รันเฉพาะ transition ที่เหลือ)
+    const startIdx = SUBTASK_DONE_CHAIN.findIndex(t => t.from.toUpperCase() === upper);
+    if (startIdx === -1) {
+      console.error(`[transitionScenarioSubtasks] ${issueKey} status "${statusName}" ไม่อยู่ใน flow — ข้ามและนับเป็น failed`);
+      failed.push(issueKey);
+      continue;
+    }
+
+    // 3) รัน transition ที่เหลือตามลำดับ
     let ok = true;
-    for (const t of SUBTASK_DONE_CHAIN) {
+    for (const t of SUBTASK_DONE_CHAIN.slice(startIdx)) {
       try {
         const res = await jiraPost(`/rest/api/3/issue/${issueKey}/transitions`, { transition: { id: t.id } });
         if (res?.errorMessages?.length || res?.errors) {
@@ -1158,7 +1190,7 @@ async function transitionScenarioSubtasks(issueKeys) {
     }
     (ok ? updated : failed).push(issueKey);
   }
-  return { updated, failed };
+  return { updated, failed, skipped };
 }
 
 // assign Sub-task ทุกตัวให้ accountId คืน { assigned: [key,...], failed: [key,...] }

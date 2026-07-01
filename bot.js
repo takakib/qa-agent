@@ -7,7 +7,7 @@ const { Client, GatewayIntentBits } = require("discord.js");
 const {
   askClaude: handleMessage, handleRetestReport, handleToTestReport,
   transitionScenarioSubtasks, assignSubtasks, commentScenarioStory, searchJiraUser,
-  RACHATA_ACCOUNT_ID, SUBTASK_FINAL_STATUS,
+  SUBTASK_FINAL_STATUS,
 } = require("./claude-agent");
 const contextLoader                 = require("./context-loader");
 const { handleSummary, startScheduler } = require("./daily-summary");
@@ -670,45 +670,58 @@ client.on("messageCreate", async (message) => {
               break;
             }
 
-            // 3) transition 16 -> 20 -> 24
+            // 3) transition ตาม current status ของแต่ละ Sub-task
             await message.channel.sendTyping();
             await message.channel.send("⏳ กำลังทำ transition Sub-task ครับ...");
-            const { updated, failed } = await transitionScenarioSubtasks(subtasks);
+            const { updated, failed, skipped = [] } = await transitionScenarioSubtasks(subtasks);
             await message.channel.send([
               `✅ Transition สำเร็จ ${updated.length} ตัว → ${SUBTASK_FINAL_STATUS}`,
               updated.length ? updated.map(k => `• ${k}`).join("\n") : null,
+              skipped.length ? `↪️ อยู่ปลายทางแล้ว ${skipped.length} ตัว: ${skipped.join(", ")}` : null,
               failed.length ? `⚠️ ล้มเหลว ${failed.length} ตัว: ${failed.join(", ")}` : null,
             ].filter(Boolean).join("\n"));
 
-            // ตัวที่จะ assign/comment = ตัวที่ transition สำเร็จ (ถ้าไม่มีเลย ใช้ทั้งหมดไว้ก่อน)
-            const okSubtasks = updated.length ? updated : subtasks;
+            // ตัวที่จะ assign/comment = transition สำเร็จ + ที่อยู่ปลายทางแล้ว (ถ้าไม่มีเลย ใช้ทั้งหมดไว้ก่อน)
+            const okSubtasks = [...updated, ...skipped].length ? [...updated, ...skipped] : subtasks;
 
-            // 4) ถามว่าจะ assign ให้ใคร รอ 30 วินาที
-            await message.channel.send(`จะ assign ให้ใครครับ? พิมพ์ชื่อภายใน 30 วินาที (พิมพ์ \`skip\` เพื่อข้าม)`);
-            let assigneeName = null;
-            try {
-              const filter    = m => m.author.id === discordUserId && m.content.trim().length > 0;
-              const collected = await message.channel.awaitMessages({ filter, max: 1, time: 30000, errors: ["time"] });
-              processedIds.add(collected.first().id);
-              assigneeName = collected.first().content.trim();
-            } catch (e) {
-              await message.channel.send("⏰ หมดเวลา 30 วินาที ข้ามการ assign ครับ");
+            // 4) ถามว่าจะ assign ให้ใคร แล้ว "รอ user พิมพ์ชื่อจริง ๆ" ก่อน assign (ไม่ hardcode)
+            //    ถ้าหาชื่อไม่เจอ จะถามซ้ำได้สูงสุด 3 ครั้ง
+            let assigneeName = null, accountId = null;
+            for (let attempt = 0; attempt < 3; attempt++) {
+              await message.channel.send(
+                attempt === 0
+                  ? `จะ assign ให้ใครครับ? พิมพ์ชื่อภายใน 30 วินาที (พิมพ์ \`skip\` เพื่อข้าม)`
+                  : `พิมพ์ชื่อใหม่อีกครั้งครับ (หรือ \`skip\` เพื่อข้าม) ภายใน 30 วินาที`
+              );
+              let typed = null;
+              try {
+                const filter    = m => m.author.id === discordUserId && m.content.trim().length > 0;
+                const collected = await message.channel.awaitMessages({ filter, max: 1, time: 30000, errors: ["time"] });
+                processedIds.add(collected.first().id);
+                typed = collected.first().content.trim();
+              } catch (e) {
+                await message.channel.send("⏰ หมดเวลา 30 วินาที ข้ามการ assign ครับ");
+                break;
+              }
+              if (/^skip$/i.test(typed)) break;
+
+              // 5) รับชื่อจริงจาก user แล้ว call searchJiraUser หา accountId
+              const found = await searchJiraUser(typed);
+              if (found) { assigneeName = typed; accountId = found; break; }
+              await message.channel.send(`❌ ไม่พบ user "${typed}" ใน Jira ครับ`);
             }
 
-            // 5+6) หา accountId ด้วย searchJiraUser แล้ว assign ให้ทุก Sub-task
+            // 6) assign ให้ทุก Sub-task เฉพาะเมื่อได้ชื่อจริงที่ resolve เป็น accountId แล้ว
             let assignedLine = null;
-            if (assigneeName && !/^skip$/i.test(assigneeName)) {
-              const accountId = await searchJiraUser(assigneeName);
-              if (!accountId) {
-                await message.channel.send(`❌ ไม่พบ user "${assigneeName}" ใน Jira ครับ ข้ามการ assign`);
-              } else {
-                const { assigned, failed: aFailed } = await assignSubtasks(okSubtasks, accountId);
-                assignedLine = `👤 Assign ให้ ${assigneeName} — ${assigned.length} Sub-task`;
-                await message.channel.send([
-                  `✅ Assign ให้ **${assigneeName}** สำเร็จ ${assigned.length} ตัว`,
-                  aFailed.length ? `⚠️ assign ล้มเหลว: ${aFailed.join(", ")}` : null,
-                ].filter(Boolean).join("\n"));
-              }
+            if (assigneeName && accountId) {
+              const { assigned, failed: aFailed } = await assignSubtasks(okSubtasks, accountId);
+              assignedLine = `👤 Assign ให้ ${assigneeName} — ${assigned.length} Sub-task`;
+              await message.channel.send([
+                `✅ Assign ให้ **${assigneeName}** สำเร็จ ${assigned.length} ตัว`,
+                aFailed.length ? `⚠️ assign ล้มเหลว: ${aFailed.join(", ")}` : null,
+              ].filter(Boolean).join("\n"));
+            } else {
+              await message.channel.send("↪️ ข้ามการ assign ครับ (ไม่ได้ระบุผู้รับ)");
             }
 
             // 7) comment ผลการทดสอบ Scenario ลงใน Story
