@@ -22,6 +22,7 @@ let jiraUpdateEnabled = process.env.JIRA_UPDATE === "true";
 console.log(`Jira update (default): ${jiraUpdateEnabled ? "ON" : "OFF"}`);
 
 const MY_JIRA_ACCOUNT_ID_DEFAULT = "712020:0d2b1187-45f8-41a8-b263-2e1da40067aa";
+const RACHATA_ACCOUNT_ID         = "620dc760eb2978006892b39c";
 
 const CACHE_DIR = path.join(__dirname, "test-cache");
 if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR, { recursive: true });
@@ -45,9 +46,9 @@ const PYTHON = findPython();
 console.log("ใช้ Python:", PYTHON);
 
 const TRANSITION = {
-  "pass":     { id: "10", label: "? (QA) TESTING DONE" },
-  "ผ่าน":    { id: "10", label: "? (QA) TESTING DONE" },
-  "done":     { id: "10", label: "? (QA) TESTING DONE" },
+  "pass":     { id: "20", label: "✅ (QA) TESTING DONE" },
+  "ผ่าน":    { id: "20", label: "✅ (QA) TESTING DONE" },
+  "done":     { id: "20", label: "✅ (QA) TESTING DONE" },
   "fail":     { id: "12", label: "? TEST FAILED" },
   "ไม่ผ่าน": { id: "12", label: "? TEST FAILED" },
   "failed":   { id: "12", label: "? TEST FAILED" },
@@ -119,6 +120,35 @@ function jiraPost(apiPath, body) {
       hostname: url.hostname,
       path: apiPath,
       method: "POST",
+      headers: {
+        Authorization: "Basic " + auth,
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        "Content-Length": Buffer.byteLength(bodyStr),
+      },
+    }, (res) => {
+      let data = "";
+      res.on("data", (c) => (data += c));
+      res.on("end", () => {
+        try { resolve(data ? JSON.parse(data) : { status: res.statusCode }); }
+        catch (e) { resolve({ status: res.statusCode }); }
+      });
+    });
+    req.on("error", reject);
+    req.write(bodyStr);
+    req.end();
+  });
+}
+
+function jiraPut(apiPath, body) {
+  return new Promise((resolve, reject) => {
+    const auth    = Buffer.from(JIRA_EMAIL + ":" + JIRA_TOKEN).toString("base64");
+    const url     = new URL(JIRA_HOST);
+    const bodyStr = JSON.stringify(body);
+    const req = https.request({
+      hostname: url.hostname,
+      path: apiPath,
+      method: "PUT",
       headers: {
         Authorization: "Basic " + auth,
         Accept: "application/json",
@@ -1070,6 +1100,38 @@ function issueLine(i) {
     ` | Due: ${i.fields.duedate ?? "ไม่กำหนด"}${overdueTxt}`;
 }
 
+// เมื่อ TC ครบทั้ง Scenario แล้ว: อัปเดต Sub-task ทุกตัวที่ match กับ TC ใน Scenario นั้น
+//   1) transition -> id "20" ((QA) TESTING DONE)
+//   2) assign ให้ Rachata (RACHATA_ACCOUNT_ID)
+// รับ list ของ TC rows (แต่ละตัวมี jira_key ของ Sub-task) แล้ว dedupe เป็น issue key
+// คืน { updated: [key,...], failed: [key,...] }
+async function transitionSubtasksDone(scenarioTCs, commentText) {
+  const transition = TRANSITION["pass"]; // id "20" — (QA) TESTING DONE
+  const now        = new Date().toLocaleString("th-TH", { timeZone: "Asia/Bangkok" });
+  const issueKeys  = [...new Set(
+    scenarioTCs.filter(r => r.jira_key).map(r => r.jira_key.split("/").pop())
+  )];
+  const updated = [], failed = [];
+  for (const issueKey of issueKeys) {
+    try {
+      // 1) เปลี่ยน status เป็น (QA) TESTING DONE
+      await jiraPost(`/rest/api/3/issue/${issueKey}/transitions`, { transition: { id: transition.id } });
+      // 2) assign ให้ Rachata
+      await jiraPut(`/rest/api/3/issue/${issueKey}/assignee`, { accountId: RACHATA_ACCOUNT_ID });
+      // 3) comment กำกับ
+      const text = `${commentText}\nเปลี่ยน status เป็น ${transition.label} และ assign ให้ Rachata\n\n_อัพเดทโดย QA Bot เมื่อ ${now}_`;
+      await jiraPost(`/rest/api/3/issue/${issueKey}/comment`, {
+        body: { type: "doc", version: 1, content: [{ type: "paragraph", content: [{ type: "text", text }] }] },
+      });
+      updated.push(issueKey);
+    } catch (e) {
+      console.error(`[transitionSubtasksDone] ${issueKey} error:`, e.message);
+      failed.push(issueKey);
+    }
+  }
+  return { updated, failed };
+}
+
 async function handleUpdateIssue(issueKey, action, comment) {
   const transition = TRANSITION[action];
   if (!transition) return `❌ ไม่รู้จัก action: ${action}`;
@@ -1426,12 +1488,12 @@ async function handleMessage(userMessage, discordUserId, fileUrl = null, fileNam
         const isPass     = s => (s || "").trim().toLowerCase() === "pass";
         const scenarioId = (tc.scenario_id || "").trim();
 
-        // ไม่มี Scenario ID → fallback อัปเดต Jira ตาม TC แบบเดิม
+        // ไม่มี Scenario ID → อัปเดต Sub-task ของ TC นี้ตัวเดียว (Testing Done + assign Rachata)
         if (!scenarioId) {
           if (!tc.jira_key) return `✅ บันทึก pass ของ ${tc.tc_id} แล้วครับ (ไม่พบ Scenario ID และไม่มี jira_key จึงไม่อัปเดต Jira)`;
-          const issueKey   = tc.jira_key.split("/").pop();
-          const jiraResult = await handleUpdateIssue(issueKey, "pass", intent.comment);
-          return jiraResult + (jiraResult.startsWith("❌") ? "" : `\n__ASK_RETEST__:${tc.tc_id}`);
+          const { updated, failed } = await transitionSubtasksDone([tc], intent.comment || `${tc.tc_id} ผ่านการทดสอบแล้ว`);
+          if (updated.length === 0) return `❌ อัปเดต Jira ไม่สำเร็จสำหรับ ${tc.tc_id}${failed.length ? ` (${failed.join(", ")})` : ""}`;
+          return `✅ อัปเดต ${updated.join(", ")} → ${TRANSITION["pass"].label} + assign Rachata\n__ASK_RETEST__:${tc.tc_id}`;
         }
 
         // 2) หา TC ทั้งหมดใน Scenario เดียวกัน
@@ -1448,13 +1510,18 @@ async function handleMessage(userMessage, discordUserId, fileUrl = null, fileNam
           return `✅ บันทึก pass แล้วครับ ยังเหลืออีก ${notPass.length} TC ใน Scenario ${scenarioId} นี้\n  └ รอ: ${remaining}`;
         }
 
-        // 4) ครบทุก TC → update Jira status
-        if (!tc.jira_key) return `🎉 ทุก ${scenarioTCs.length} TC ใน Scenario ${scenarioId} PASS ครบแล้วครับ แต่ไม่พบ jira_key จึงไม่อัปเดต Jira`;
-        const issueKey   = tc.jira_key.split("/").pop();
-        const jiraResult = await handleUpdateIssue(issueKey, "pass", intent.comment || `ทุก TC ใน Scenario ${scenarioId} ผ่านครบแล้ว`);
-        const header     = `🎉 ทุก ${scenarioTCs.length} TC ใน Scenario ${scenarioId} PASS ครบแล้ว — อัปเดต Jira ${issueKey}\n\n`;
-        const askRetest  = jiraResult.startsWith("❌") ? "" : `\n__ASK_RETEST__:${tc.tc_id}`;
-        return header + jiraResult + askRetest;
+        // 4) ครบทุก TC → อัปเดต Sub-task ทุกตัวที่ match กับ TC ใน Scenario นี้
+        //    (transition id 20 = (QA) TESTING DONE + assign ให้ Rachata)
+        const subtaskTCs = scenarioTCs.filter(r => r.jira_key);
+        if (subtaskTCs.length === 0) return `🎉 ทุก ${scenarioTCs.length} TC ใน Scenario ${scenarioId} PASS ครบแล้วครับ แต่ไม่พบ jira_key จึงไม่อัปเดต Jira`;
+        const { updated, failed } = await transitionSubtasksDone(subtaskTCs, intent.comment || `ทุก TC ใน Scenario ${scenarioId} ผ่านครบแล้ว`);
+        const header   = `🎉 ทุก ${scenarioTCs.length} TC ใน Scenario ${scenarioId} PASS ครบแล้ว\n`;
+        const doneLine = updated.length
+          ? `✅ อัปเดต ${updated.length} Sub-task → ${TRANSITION["pass"].label} + assign Rachata\n  └ ${updated.join(", ")}`
+          : `❌ ไม่สามารถอัปเดต Sub-task ได้`;
+        const failLine = failed.length ? `\n⚠️ อัปเดตไม่สำเร็จ ${failed.length} รายการ: ${failed.join(", ")}` : "";
+        const askRetest = updated.length ? `\n__ASK_RETEST__:${tc.tc_id}` : "";
+        return header + doneLine + failLine + askRetest;
       }
       case "overdue":       return await handleOverdue(ctx);
       case "uat_pending":   return await handleUatPending(userMessage, ctx);
