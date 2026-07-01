@@ -1111,11 +1111,30 @@ const SUBTASK_DONE_CHAIN = [
 ];
 const SUBTASK_FINAL_STATUS = "WAITING FOR DEPLOY PROD";
 
-// dedupe issue key ของ Sub-task จาก list ของ TC rows (แต่ละตัวมี jira_key)
-function subtaskKeysOf(rows) {
+// dedupe Story key จาก list ของ TC rows (jira_key ที่ match ไว้คือ "Story")
+function storyKeysOf(rows) {
   return [...new Set(
     (rows || []).filter(r => r.jira_key).map(r => r.jira_key.split("/").pop())
   )];
+}
+
+// fetch Sub-task ทั้งหมดของ Story ที่ match ไว้ ด้วย /rest/api/3/issue/STORY-KEY?fields=subtasks
+// คืน { subtasks: [key,...], storySubMap: { STORY: [subKey,...] } }
+async function fetchSubtasksOfStories(storyKeys) {
+  const subtasks    = [];
+  const storySubMap = {};
+  for (const storyKey of storyKeys || []) {
+    try {
+      const data = await jiraGet(`/rest/api/3/issue/${storyKey}?fields=subtasks`);
+      const subs = (data.fields?.subtasks || []).map(s => s.key).filter(Boolean);
+      storySubMap[storyKey] = subs;
+      subtasks.push(...subs);
+    } catch (e) {
+      console.error(`[fetchSubtasksOfStories] ${storyKey} ล้มเหลว:`, e.message);
+      storySubMap[storyKey] = [];
+    }
+  }
+  return { subtasks: [...new Set(subtasks)], storySubMap };
 }
 
 // transition Sub-task ทุกตัวตามลำดับ 16 -> 20 -> 24 (จบที่ WAITING FOR DEPLOY PROD)
@@ -1160,21 +1179,13 @@ async function assignSubtasks(issueKeys, accountId) {
   return { assigned, failed };
 }
 
-// comment ผลการทดสอบ Scenario ลงใน Story (parent ของ Sub-task) — dedupe Story
+// comment ผลการทดสอบ Scenario ลงใน Story ที่ match ไว้ (รับ Story key ตรง ๆ — dedupe)
 // คืน { stories: [key,...] }
-async function commentScenarioStory(issueKeys, resultText) {
-  const now       = new Date().toLocaleString("th-TH", { timeZone: "Asia/Bangkok" });
-  const storyKeys = new Set();
-  for (const issueKey of issueKeys || []) {
-    try {
-      const data      = await jiraGet(`/rest/api/3/issue/${issueKey}?fields=parent`);
-      const parentKey = data.fields?.parent?.key;
-      if (parentKey) storyKeys.add(parentKey);
-    } catch (e) { console.error(`[commentScenarioStory] ดึง parent ของ ${issueKey} ล้มเหลว:`, e.message); }
-  }
+async function commentScenarioStory(storyKeys, resultText) {
+  const now     = new Date().toLocaleString("th-TH", { timeZone: "Asia/Bangkok" });
   const text    = `${resultText}\n\n_อัพเดทโดย QA Bot เมื่อ ${now}_`;
   const stories = [];
-  for (const storyKey of storyKeys) {
+  for (const storyKey of [...new Set(storyKeys || [])]) {
     try {
       await jiraPost(`/rest/api/3/issue/${storyKey}/comment`, {
         body: { type: "doc", version: 1, content: [{ type: "paragraph", content: [{ type: "text", text }] }] },
@@ -1541,13 +1552,16 @@ async function handleMessage(userMessage, discordUserId, fileUrl = null, fileNam
         const isPass     = s => (s || "").trim().toLowerCase() === "pass";
         const scenarioId = (tc.scenario_id || "").trim();
 
-        // ไม่มี Scenario ID → เตรียมอัปเดต Sub-task ของ TC นี้ตัวเดียว (bot จะถามยืนยันก่อน)
+        // ไม่มี Scenario ID → fetch Sub-task จาก Story ของ TC นี้ตัวเดียว (bot จะถามยืนยันก่อน)
         if (!scenarioId) {
           if (!tc.jira_key) return `✅ บันทึก pass ของ ${tc.tc_id} แล้วครับ (ไม่พบ Scenario ID และไม่มี jira_key จึงไม่อัปเดต Jira)`;
-          const subtasks = subtaskKeysOf([tc]);
-          const payload  = JSON.stringify({ tcId: tc.tc_id, scenarioId: "", tcs: [tc.tc_id], subtasks, comment: intent.comment || "" });
+          const stories = storyKeysOf([tc]);
+          const { subtasks } = await fetchSubtasksOfStories(stories);
+          if (subtasks.length === 0) return `✅ บันทึก pass ของ ${tc.tc_id} แล้วครับ แต่ไม่พบ Sub-task ใน Story ${stories.join(", ")} จึงไม่อัปเดต Jira`;
+          const payload  = JSON.stringify({ tcId: tc.tc_id, scenarioId: "", tcs: [tc.tc_id], stories, subtasks, comment: intent.comment || "" });
           const header   = [
             `✅ บันทึก pass ของ ${tc.tc_id} แล้วครับ (ไม่มี Scenario ID)`,
+            `📦 Story: ${stories.join(", ")}`,
             `📋 Sub-task ที่จะอัปเดต (${subtasks.length} ตัว): ${subtasks.join(", ")}`,
           ].join("\n");
           return `${header}\n__SCENARIO_DONE__:${payload}`;
@@ -1567,20 +1581,23 @@ async function handleMessage(userMessage, discordUserId, fileUrl = null, fileNam
           return `✅ บันทึก pass แล้วครับ ยังเหลืออีก ${notPass.length} TC ใน Scenario ${scenarioId} นี้\n  └ รอ: ${remaining}`;
         }
 
-        // 4) ครบทุก TC → เตรียมอัปเดต Sub-task ทุกตัวที่ match กับ TC ใน Scenario นี้
+        // 4) ครบทุก TC → fetch Sub-task จาก Story ที่ match ไว้ (ไม่ใช่ update Story เอง)
         //    (bot จะแสดง Sub-task + ถามยืนยัน + ถามผู้รับ assign ก่อนลงมือจริง)
-        const subtaskTCs = scenarioTCs.filter(r => r.jira_key);
-        if (subtaskTCs.length === 0) return `🎉 ทุก ${scenarioTCs.length} TC ใน Scenario ${scenarioId} PASS ครบแล้วครับ แต่ไม่พบ jira_key จึงไม่อัปเดต Jira`;
-        const subtasks = subtaskKeysOf(subtaskTCs);
+        const stories = storyKeysOf(scenarioTCs);
+        if (stories.length === 0) return `🎉 ทุก ${scenarioTCs.length} TC ใน Scenario ${scenarioId} PASS ครบแล้วครับ แต่ไม่พบ jira_key (Story) จึงไม่อัปเดต Jira`;
+        const { subtasks } = await fetchSubtasksOfStories(stories);
+        if (subtasks.length === 0) return `🎉 ทุก ${scenarioTCs.length} TC ใน Scenario ${scenarioId} PASS ครบแล้วครับ แต่ไม่พบ Sub-task ใน Story ${stories.join(", ")} จึงไม่อัปเดต Jira`;
         const payload  = JSON.stringify({
           tcId:       tc.tc_id,
           scenarioId,
           tcs:        scenarioTCs.map(r => r.tc_id),
+          stories,
           subtasks,
           comment:    intent.comment || `ทุก TC ใน Scenario ${scenarioId} ผ่านครบแล้ว`,
         });
         const header = [
           `🎉 ทุก ${scenarioTCs.length} TC ใน Scenario ${scenarioId} PASS ครบแล้ว`,
+          `📦 Story: ${stories.join(", ")}`,
           `📋 Sub-task ที่จะอัปเดต (${subtasks.length} ตัว): ${subtasks.join(", ")}`,
         ].join("\n");
         return `${header}\n__SCENARIO_DONE__:${payload}`;
@@ -1603,6 +1620,6 @@ module.exports = {
   getTcStatusFromExcel, getExcelPath, findLatestExcel,
   handleRetestReport, handleToTestReport,
   // scenario-complete interactive flow (bot.js orchestrates)
-  transitionScenarioSubtasks, assignSubtasks, commentScenarioStory, searchJiraUser,
+  fetchSubtasksOfStories, transitionScenarioSubtasks, assignSubtasks, commentScenarioStory, searchJiraUser,
   RACHATA_ACCOUNT_ID, SUBTASK_FINAL_STATUS,
 };

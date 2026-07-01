@@ -642,17 +642,18 @@ client.on("messageCreate", async (message) => {
           contextLoader.logAction(discordUserId, intent, tcId ? { tc: tcId } : {});
 
           if (!payload || !Array.isArray(payload.subtasks) || payload.subtasks.length === 0) break;
-          const { subtasks, scenarioId, tcs = [], comment } = payload;
+          const { subtasks, scenarioId, tcs = [], comment, stories = [] } = payload;
 
           waitingConfirm.add(discordUserId);
           try {
-            // 1+2) แสดง Sub-task + ถาม yes/no รอ 30 วินาที
+            // 1+2) แสดง Sub-task (ดึงจาก Story) + ถาม yes/no รอ 30 วินาที
             await message.channel.send([
+              stories.length ? `📦 Story: ${stories.join(", ")}` : null,
               `จะอัปเดต Sub-task ${subtasks.length} ตัวนี้ไหมครับ?`,
               subtasks.map(k => `• ${k}`).join("\n"),
               `(transition: TO TEST → QA IN PROGRESS → QA TESTING DONE → ${SUBTASK_FINAL_STATUS})`,
               `พิมพ์ \`yes\` เพื่อดำเนินการ หรือ \`no\` เพื่อยกเลิก ภายใน 30 วินาทีครับ`,
-            ].join("\n"));
+            ].filter(Boolean).join("\n"));
 
             let doUpdate = false;
             try {
@@ -718,9 +719,9 @@ client.on("messageCreate", async (message) => {
               `🔧 Sub-task: ${okSubtasks.join(", ")} → ${SUBTASK_FINAL_STATUS}`,
               assignedLine,
             ].filter(Boolean).join("\n");
-            const { stories } = await commentScenarioStory(okSubtasks, resultText);
-            if (stories.length) await message.channel.send(`📝 Comment ผลการทดสอบลงใน Story แล้วครับ: ${stories.join(", ")}`);
-            else                await message.channel.send(`⚠️ ไม่พบ Story (parent) ของ Sub-task จึงไม่ได้ comment ครับ`);
+            const { stories: commented } = await commentScenarioStory(stories, resultText);
+            if (commented.length) await message.channel.send(`📝 Comment ผลการทดสอบลงใน Story แล้วครับ: ${commented.join(", ")}`);
+            else                  await message.channel.send(`⚠️ ไม่พบ Story ที่จะ comment ครับ`);
           } finally {
             waitingConfirm.delete(discordUserId);
           }
