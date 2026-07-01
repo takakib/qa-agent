@@ -903,13 +903,15 @@ async function readTestCasesFromExcel(filePath, tcFilter = null) {
     "rows = []",
     "for i, row in df.iterrows():",
     "    tc_id    = str(row.get('Test Case\\nID', '') or '').strip()",
+    "    scenario = str(row.get('Scenario\\nID', '') or '').strip()",
+    "    status   = str(row.get('Scenario\\nStatus', '') or '').strip()",
     "    summary  = str(row.get('Summary', '') or '').strip()",
     "    module   = str(row.get('Module /\\nFeature', '') or '').strip()",
     "    steps    = str(row.get('Test Steps', '') or '').strip()",
     "    expected = str(row.get('Expected\\nResult', '') or '').strip()",
     "    upload   = str(row.get('Upload\\nJira', '') or '').strip()",
     "    if tc_id and tc_id.startswith('TC_') and summary and summary != 'nan':",
-    "        rows.append({'tc_id': tc_id, 'summary': summary, 'module': module, 'steps': steps, 'expected': expected, 'jira_key': upload if upload not in ['No','nan',''] else None})",
+    "        rows.append({'tc_id': tc_id, 'scenario_id': scenario if scenario != 'nan' else '', 'status': status if status != 'nan' else '', 'summary': summary, 'module': module, 'steps': steps, 'expected': expected, 'jira_key': upload if upload not in ['No','nan',''] else None})",
     "print(json.dumps(rows, ensure_ascii=False))",
   ].join("\n"), "utf8");
   const result = execSync(`${PYTHON} "${readScript}"`, {
@@ -1394,30 +1396,65 @@ async function handleMessage(userMessage, discordUserId, fileUrl = null, fileNam
       case "manual_update": {
         const excelPath = getExcelPath(ctx) || findLatestExcel();
         if (!excelPath) return "❌ ไม่พบไฟล์ Excel ครับ กรุณาแนบไฟล์ Excel ก่อน";
-        let rows;
-        try { rows = await readTestCasesFromExcel(excelPath, intent.tcId); }
-        catch (e) { return `❌ อ่าน Excel ล้มเหลว: ${e.message}`; }
-        const tc = rows[0];
-        if (!tc)          return `❌ ไม่พบ Test Case "${intent.tcId}" ใน Excel ครับ`;
-        if (!tc.jira_key) return `❌ ไม่พบ jira_key สำหรับ ${intent.tcId} ใน Excel ครับ (คอลัมน์ Upload Jira ว่าง)`;
-        const issueKey   = tc.jira_key.split("/").pop();
-        const jiraResult = await handleUpdateIssue(issueKey, intent.action, intent.comment);
-        const jiraOk     = !jiraResult.startsWith("❌");
 
-        if (jiraOk) {
-          const statusMap   = { pass: "PASS", fail: "FAIL", block: "BLOCKED", blocked: "BLOCKED" };
-          const excelStatus = statusMap[intent.action] || intent.action.toUpperCase();
-          writeResultsToExcel(excelPath, [{
-            tc_id:  tc.tc_id,
-            status: excelStatus,
-            actual: intent.comment || `Manual update: ${excelStatus}`,
-          }]);
+        // อ่าน TC ทั้งหมด (ไม่ filter) เพื่อใช้จัดกลุ่มตาม Scenario
+        let allRows;
+        try { allRows = await readTestCasesFromExcel(excelPath); }
+        catch (e) { return `❌ อ่าน Excel ล้มเหลว: ${e.message}`; }
+
+        const tc = allRows.find(r => r.tc_id.toLowerCase() === intent.tcId.toLowerCase());
+        if (!tc) return `❌ ไม่พบ Test Case "${intent.tcId}" ใน Excel ครับ`;
+
+        const statusMap   = { pass: "PASS", fail: "FAIL", block: "BLOCKED", blocked: "BLOCKED" };
+        const excelStatus = statusMap[intent.action] || intent.action.toUpperCase();
+
+        // ── action != pass: คงพฤติกรรมเดิม (update Jira ทันที + เขียน Excel) ──
+        if (intent.action !== "pass") {
+          if (!tc.jira_key) return `❌ ไม่พบ jira_key สำหรับ ${intent.tcId} ใน Excel ครับ (คอลัมน์ Upload Jira ว่าง)`;
+          const issueKey   = tc.jira_key.split("/").pop();
+          const jiraResult = await handleUpdateIssue(issueKey, intent.action, intent.comment);
+          if (!jiraResult.startsWith("❌")) {
+            writeResultsToExcel(excelPath, [{ tc_id: tc.tc_id, status: excelStatus, actual: intent.comment || `Manual update: ${excelStatus}` }]);
+          }
+          return jiraResult;
         }
 
-        const askRetest = jiraOk && intent.action === "pass"
-          ? `\n__ASK_RETEST__:${tc.tc_id}`
-          : "";
-        return jiraResult + askRetest;
+        // ── action == pass: gate ด้วย scenario completeness ──
+        // 1) บันทึกผล pass ของ TC นี้ลง Excel ก่อนเสมอ
+        writeResultsToExcel(excelPath, [{ tc_id: tc.tc_id, status: "PASS", actual: intent.comment || "Manual update: PASS" }]);
+
+        const isPass     = s => (s || "").trim().toLowerCase() === "pass";
+        const scenarioId = (tc.scenario_id || "").trim();
+
+        // ไม่มี Scenario ID → fallback อัปเดต Jira ตาม TC แบบเดิม
+        if (!scenarioId) {
+          if (!tc.jira_key) return `✅ บันทึก pass ของ ${tc.tc_id} แล้วครับ (ไม่พบ Scenario ID และไม่มี jira_key จึงไม่อัปเดต Jira)`;
+          const issueKey   = tc.jira_key.split("/").pop();
+          const jiraResult = await handleUpdateIssue(issueKey, "pass", intent.comment);
+          return jiraResult + (jiraResult.startsWith("❌") ? "" : `\n__ASK_RETEST__:${tc.tc_id}`);
+        }
+
+        // 2) หา TC ทั้งหมดใน Scenario เดียวกัน
+        const scenarioTCs = allRows.filter(r => (r.scenario_id || "").trim() === scenarioId);
+
+        // 3) เช็คว่าทุก TC PASS หมดไหม (TC ปัจจุบันถือว่า PASS แล้วเพราะเพิ่งบันทึก)
+        const notPass = scenarioTCs.filter(r =>
+          r.tc_id.toLowerCase() === tc.tc_id.toLowerCase() ? false : !isPass(r.status)
+        );
+
+        // ยังไม่ครบ → แจ้ง user ไม่อัปเดต Jira
+        if (notPass.length > 0) {
+          const remaining = notPass.map(r => r.tc_id).join(", ");
+          return `✅ บันทึก pass แล้วครับ ยังเหลืออีก ${notPass.length} TC ใน Scenario ${scenarioId} นี้\n  └ รอ: ${remaining}`;
+        }
+
+        // 4) ครบทุก TC → update Jira status
+        if (!tc.jira_key) return `🎉 ทุก ${scenarioTCs.length} TC ใน Scenario ${scenarioId} PASS ครบแล้วครับ แต่ไม่พบ jira_key จึงไม่อัปเดต Jira`;
+        const issueKey   = tc.jira_key.split("/").pop();
+        const jiraResult = await handleUpdateIssue(issueKey, "pass", intent.comment || `ทุก TC ใน Scenario ${scenarioId} ผ่านครบแล้ว`);
+        const header     = `🎉 ทุก ${scenarioTCs.length} TC ใน Scenario ${scenarioId} PASS ครบแล้ว — อัปเดต Jira ${issueKey}\n\n`;
+        const askRetest  = jiraResult.startsWith("❌") ? "" : `\n__ASK_RETEST__:${tc.tc_id}`;
+        return header + jiraResult + askRetest;
       }
       case "overdue":       return await handleOverdue(ctx);
       case "uat_pending":   return await handleUatPending(userMessage, ctx);
