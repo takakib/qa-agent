@@ -1100,36 +1100,89 @@ function issueLine(i) {
     ` | Due: ${i.fields.duedate ?? "ไม่กำหนด"}${overdueTxt}`;
 }
 
-// เมื่อ TC ครบทั้ง Scenario แล้ว: อัปเดต Sub-task ทุกตัวที่ match กับ TC ใน Scenario นั้น
-//   1) transition -> id "20" ((QA) TESTING DONE)
-//   2) assign ให้ Rachata (RACHATA_ACCOUNT_ID)
-// รับ list ของ TC rows (แต่ละตัวมี jira_key ของ Sub-task) แล้ว dedupe เป็น issue key
-// คืน { updated: [key,...], failed: [key,...] }
-async function transitionSubtasksDone(scenarioTCs, commentText) {
-  const transition = TRANSITION["pass"]; // id "20" — (QA) TESTING DONE
-  const now        = new Date().toLocaleString("th-TH", { timeZone: "Asia/Bangkok" });
-  const issueKeys  = [...new Set(
-    scenarioTCs.filter(r => r.jira_key).map(r => r.jira_key.split("/").pop())
+// ลำดับ transition ของ Sub-task เมื่อ TC ครบ Scenario (ต้องรันตามลำดับนี้เท่านั้น)
+//   16: TO TEST            -> QA IN PROGRESS
+//   20: QA IN PROGRESS     -> QA TESTING DONE
+//   24: QA TESTING DONE    -> WAITING FOR DEPLOY PROD
+const SUBTASK_DONE_CHAIN = [
+  { id: "16", label: "TO TEST → QA IN PROGRESS" },
+  { id: "20", label: "QA IN PROGRESS → QA TESTING DONE" },
+  { id: "24", label: "QA TESTING DONE → WAITING FOR DEPLOY PROD" },
+];
+const SUBTASK_FINAL_STATUS = "WAITING FOR DEPLOY PROD";
+
+// dedupe issue key ของ Sub-task จาก list ของ TC rows (แต่ละตัวมี jira_key)
+function subtaskKeysOf(rows) {
+  return [...new Set(
+    (rows || []).filter(r => r.jira_key).map(r => r.jira_key.split("/").pop())
   )];
+}
+
+// transition Sub-task ทุกตัวตามลำดับ 16 -> 20 -> 24 (จบที่ WAITING FOR DEPLOY PROD)
+// ถ้าขั้นใดขั้นหนึ่งของ issue นั้น fail จะหยุด chain ของ issue นั้นและนับเป็น failed
+// คืน { updated: [key,...], failed: [key,...] }
+async function transitionScenarioSubtasks(issueKeys) {
   const updated = [], failed = [];
-  for (const issueKey of issueKeys) {
+  for (const issueKey of issueKeys || []) {
+    let ok = true;
+    for (const t of SUBTASK_DONE_CHAIN) {
+      try {
+        const res = await jiraPost(`/rest/api/3/issue/${issueKey}/transitions`, { transition: { id: t.id } });
+        if (res?.errorMessages?.length || res?.errors) {
+          console.error(`[transitionScenarioSubtasks] ${issueKey} transition ${t.id} (${t.label}):`, JSON.stringify(res.errorMessages || res.errors));
+          ok = false; break;
+        }
+      } catch (e) {
+        console.error(`[transitionScenarioSubtasks] ${issueKey} transition ${t.id} error:`, e.message);
+        ok = false; break;
+      }
+    }
+    (ok ? updated : failed).push(issueKey);
+  }
+  return { updated, failed };
+}
+
+// assign Sub-task ทุกตัวให้ accountId คืน { assigned: [key,...], failed: [key,...] }
+async function assignSubtasks(issueKeys, accountId) {
+  const assigned = [], failed = [];
+  for (const issueKey of issueKeys || []) {
     try {
-      // 1) เปลี่ยน status เป็น (QA) TESTING DONE
-      await jiraPost(`/rest/api/3/issue/${issueKey}/transitions`, { transition: { id: transition.id } });
-      // 2) assign ให้ Rachata
-      await jiraPut(`/rest/api/3/issue/${issueKey}/assignee`, { accountId: RACHATA_ACCOUNT_ID });
-      // 3) comment กำกับ
-      const text = `${commentText}\nเปลี่ยน status เป็น ${transition.label} และ assign ให้ Rachata\n\n_อัพเดทโดย QA Bot เมื่อ ${now}_`;
-      await jiraPost(`/rest/api/3/issue/${issueKey}/comment`, {
-        body: { type: "doc", version: 1, content: [{ type: "paragraph", content: [{ type: "text", text }] }] },
-      });
-      updated.push(issueKey);
+      const res = await jiraPut(`/rest/api/3/issue/${issueKey}/assignee`, { accountId });
+      if (res?.errorMessages?.length || res?.errors) {
+        console.error(`[assignSubtasks] ${issueKey}:`, JSON.stringify(res.errorMessages || res.errors));
+        failed.push(issueKey);
+      } else assigned.push(issueKey);
     } catch (e) {
-      console.error(`[transitionSubtasksDone] ${issueKey} error:`, e.message);
+      console.error(`[assignSubtasks] ${issueKey} error:`, e.message);
       failed.push(issueKey);
     }
   }
-  return { updated, failed };
+  return { assigned, failed };
+}
+
+// comment ผลการทดสอบ Scenario ลงใน Story (parent ของ Sub-task) — dedupe Story
+// คืน { stories: [key,...] }
+async function commentScenarioStory(issueKeys, resultText) {
+  const now       = new Date().toLocaleString("th-TH", { timeZone: "Asia/Bangkok" });
+  const storyKeys = new Set();
+  for (const issueKey of issueKeys || []) {
+    try {
+      const data      = await jiraGet(`/rest/api/3/issue/${issueKey}?fields=parent`);
+      const parentKey = data.fields?.parent?.key;
+      if (parentKey) storyKeys.add(parentKey);
+    } catch (e) { console.error(`[commentScenarioStory] ดึง parent ของ ${issueKey} ล้มเหลว:`, e.message); }
+  }
+  const text    = `${resultText}\n\n_อัพเดทโดย QA Bot เมื่อ ${now}_`;
+  const stories = [];
+  for (const storyKey of storyKeys) {
+    try {
+      await jiraPost(`/rest/api/3/issue/${storyKey}/comment`, {
+        body: { type: "doc", version: 1, content: [{ type: "paragraph", content: [{ type: "text", text }] }] },
+      });
+      stories.push(storyKey);
+    } catch (e) { console.error(`[commentScenarioStory] comment Story ${storyKey} ล้มเหลว:`, e.message); }
+  }
+  return { stories };
 }
 
 async function handleUpdateIssue(issueKey, action, comment) {
@@ -1488,12 +1541,16 @@ async function handleMessage(userMessage, discordUserId, fileUrl = null, fileNam
         const isPass     = s => (s || "").trim().toLowerCase() === "pass";
         const scenarioId = (tc.scenario_id || "").trim();
 
-        // ไม่มี Scenario ID → อัปเดต Sub-task ของ TC นี้ตัวเดียว (Testing Done + assign Rachata)
+        // ไม่มี Scenario ID → เตรียมอัปเดต Sub-task ของ TC นี้ตัวเดียว (bot จะถามยืนยันก่อน)
         if (!scenarioId) {
           if (!tc.jira_key) return `✅ บันทึก pass ของ ${tc.tc_id} แล้วครับ (ไม่พบ Scenario ID และไม่มี jira_key จึงไม่อัปเดต Jira)`;
-          const { updated, failed } = await transitionSubtasksDone([tc], intent.comment || `${tc.tc_id} ผ่านการทดสอบแล้ว`);
-          if (updated.length === 0) return `❌ อัปเดต Jira ไม่สำเร็จสำหรับ ${tc.tc_id}${failed.length ? ` (${failed.join(", ")})` : ""}`;
-          return `✅ อัปเดต ${updated.join(", ")} → ${TRANSITION["pass"].label} + assign Rachata\n__ASK_RETEST__:${tc.tc_id}`;
+          const subtasks = subtaskKeysOf([tc]);
+          const payload  = JSON.stringify({ tcId: tc.tc_id, scenarioId: "", tcs: [tc.tc_id], subtasks, comment: intent.comment || "" });
+          const header   = [
+            `✅ บันทึก pass ของ ${tc.tc_id} แล้วครับ (ไม่มี Scenario ID)`,
+            `📋 Sub-task ที่จะอัปเดต (${subtasks.length} ตัว): ${subtasks.join(", ")}`,
+          ].join("\n");
+          return `${header}\n__SCENARIO_DONE__:${payload}`;
         }
 
         // 2) หา TC ทั้งหมดใน Scenario เดียวกัน
@@ -1510,18 +1567,23 @@ async function handleMessage(userMessage, discordUserId, fileUrl = null, fileNam
           return `✅ บันทึก pass แล้วครับ ยังเหลืออีก ${notPass.length} TC ใน Scenario ${scenarioId} นี้\n  └ รอ: ${remaining}`;
         }
 
-        // 4) ครบทุก TC → อัปเดต Sub-task ทุกตัวที่ match กับ TC ใน Scenario นี้
-        //    (transition id 20 = (QA) TESTING DONE + assign ให้ Rachata)
+        // 4) ครบทุก TC → เตรียมอัปเดต Sub-task ทุกตัวที่ match กับ TC ใน Scenario นี้
+        //    (bot จะแสดง Sub-task + ถามยืนยัน + ถามผู้รับ assign ก่อนลงมือจริง)
         const subtaskTCs = scenarioTCs.filter(r => r.jira_key);
         if (subtaskTCs.length === 0) return `🎉 ทุก ${scenarioTCs.length} TC ใน Scenario ${scenarioId} PASS ครบแล้วครับ แต่ไม่พบ jira_key จึงไม่อัปเดต Jira`;
-        const { updated, failed } = await transitionSubtasksDone(subtaskTCs, intent.comment || `ทุก TC ใน Scenario ${scenarioId} ผ่านครบแล้ว`);
-        const header   = `🎉 ทุก ${scenarioTCs.length} TC ใน Scenario ${scenarioId} PASS ครบแล้ว\n`;
-        const doneLine = updated.length
-          ? `✅ อัปเดต ${updated.length} Sub-task → ${TRANSITION["pass"].label} + assign Rachata\n  └ ${updated.join(", ")}`
-          : `❌ ไม่สามารถอัปเดต Sub-task ได้`;
-        const failLine = failed.length ? `\n⚠️ อัปเดตไม่สำเร็จ ${failed.length} รายการ: ${failed.join(", ")}` : "";
-        const askRetest = updated.length ? `\n__ASK_RETEST__:${tc.tc_id}` : "";
-        return header + doneLine + failLine + askRetest;
+        const subtasks = subtaskKeysOf(subtaskTCs);
+        const payload  = JSON.stringify({
+          tcId:       tc.tc_id,
+          scenarioId,
+          tcs:        scenarioTCs.map(r => r.tc_id),
+          subtasks,
+          comment:    intent.comment || `ทุก TC ใน Scenario ${scenarioId} ผ่านครบแล้ว`,
+        });
+        const header = [
+          `🎉 ทุก ${scenarioTCs.length} TC ใน Scenario ${scenarioId} PASS ครบแล้ว`,
+          `📋 Sub-task ที่จะอัปเดต (${subtasks.length} ตัว): ${subtasks.join(", ")}`,
+        ].join("\n");
+        return `${header}\n__SCENARIO_DONE__:${payload}`;
       }
       case "overdue":       return await handleOverdue(ctx);
       case "uat_pending":   return await handleUatPending(userMessage, ctx);
@@ -1536,4 +1598,11 @@ async function handleMessage(userMessage, discordUserId, fileUrl = null, fileNam
   }
 }
 
-module.exports = { askClaude: handleMessage, getTcStatusFromExcel, getExcelPath, findLatestExcel, handleRetestReport, handleToTestReport };
+module.exports = {
+  askClaude: handleMessage,
+  getTcStatusFromExcel, getExcelPath, findLatestExcel,
+  handleRetestReport, handleToTestReport,
+  // scenario-complete interactive flow (bot.js orchestrates)
+  transitionScenarioSubtasks, assignSubtasks, commentScenarioStory, searchJiraUser,
+  RACHATA_ACCOUNT_ID, SUBTASK_FINAL_STATUS,
+};

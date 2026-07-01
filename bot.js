@@ -4,7 +4,11 @@
 require("dotenv").config();
 
 const { Client, GatewayIntentBits } = require("discord.js");
-const { askClaude: handleMessage, handleRetestReport, handleToTestReport } = require("./claude-agent");
+const {
+  askClaude: handleMessage, handleRetestReport, handleToTestReport,
+  transitionScenarioSubtasks, assignSubtasks, commentScenarioStory, searchJiraUser,
+  RACHATA_ACCOUNT_ID, SUBTASK_FINAL_STATUS,
+} = require("./claude-agent");
 const contextLoader                 = require("./context-loader");
 const { handleSummary, startScheduler } = require("./daily-summary");
 const config                        = require("./config");
@@ -627,6 +631,101 @@ client.on("messageCreate", async (message) => {
           sendProgress,
           { systemPrompt, context }
         );
+
+        // ── Scenario ผ่านครบ → flow ยืนยัน + assign แบบ interactive ──────────
+        const scenarioMatch = reply.match(/__SCENARIO_DONE__:(\{[\s\S]*\})\s*$/);
+        if (scenarioMatch) {
+          let payload = null;
+          try { payload = JSON.parse(scenarioMatch[1]); } catch (_) { payload = null; }
+          const cleanReply = reply.replace(/\n?__SCENARIO_DONE__:[\s\S]*$/, "").trimEnd();
+          await sendLong(message, cleanReply);
+          contextLoader.logAction(discordUserId, intent, tcId ? { tc: tcId } : {});
+
+          if (!payload || !Array.isArray(payload.subtasks) || payload.subtasks.length === 0) break;
+          const { subtasks, scenarioId, tcs = [], comment } = payload;
+
+          waitingConfirm.add(discordUserId);
+          try {
+            // 1+2) แสดง Sub-task + ถาม yes/no รอ 30 วินาที
+            await message.channel.send([
+              `จะอัปเดต Sub-task ${subtasks.length} ตัวนี้ไหมครับ?`,
+              subtasks.map(k => `• ${k}`).join("\n"),
+              `(transition: TO TEST → QA IN PROGRESS → QA TESTING DONE → ${SUBTASK_FINAL_STATUS})`,
+              `พิมพ์ \`yes\` เพื่อดำเนินการ หรือ \`no\` เพื่อยกเลิก ภายใน 30 วินาทีครับ`,
+            ].join("\n"));
+
+            let doUpdate = false;
+            try {
+              const filter    = m => m.author.id === discordUserId && /^(y|yes|ใช่|n|no|ไม่)\s*$/i.test(m.content.trim());
+              const collected = await message.channel.awaitMessages({ filter, max: 1, time: 30000, errors: ["time"] });
+              processedIds.add(collected.first().id);
+              doUpdate = /^(y|yes|ใช่)/i.test(collected.first().content.trim());
+            } catch (e) {
+              await message.channel.send("⏰ หมดเวลา 30 วินาที ยกเลิกการอัปเดต Sub-task ครับ");
+              break;
+            }
+            if (!doUpdate) {
+              await message.channel.send("รับทราบครับ ไม่อัปเดต Sub-task");
+              break;
+            }
+
+            // 3) transition 16 -> 20 -> 24
+            await message.channel.sendTyping();
+            await message.channel.send("⏳ กำลังทำ transition Sub-task ครับ...");
+            const { updated, failed } = await transitionScenarioSubtasks(subtasks);
+            await message.channel.send([
+              `✅ Transition สำเร็จ ${updated.length} ตัว → ${SUBTASK_FINAL_STATUS}`,
+              updated.length ? updated.map(k => `• ${k}`).join("\n") : null,
+              failed.length ? `⚠️ ล้มเหลว ${failed.length} ตัว: ${failed.join(", ")}` : null,
+            ].filter(Boolean).join("\n"));
+
+            // ตัวที่จะ assign/comment = ตัวที่ transition สำเร็จ (ถ้าไม่มีเลย ใช้ทั้งหมดไว้ก่อน)
+            const okSubtasks = updated.length ? updated : subtasks;
+
+            // 4) ถามว่าจะ assign ให้ใคร รอ 30 วินาที
+            await message.channel.send(`จะ assign ให้ใครครับ? พิมพ์ชื่อภายใน 30 วินาที (พิมพ์ \`skip\` เพื่อข้าม)`);
+            let assigneeName = null;
+            try {
+              const filter    = m => m.author.id === discordUserId && m.content.trim().length > 0;
+              const collected = await message.channel.awaitMessages({ filter, max: 1, time: 30000, errors: ["time"] });
+              processedIds.add(collected.first().id);
+              assigneeName = collected.first().content.trim();
+            } catch (e) {
+              await message.channel.send("⏰ หมดเวลา 30 วินาที ข้ามการ assign ครับ");
+            }
+
+            // 5+6) หา accountId ด้วย searchJiraUser แล้ว assign ให้ทุก Sub-task
+            let assignedLine = null;
+            if (assigneeName && !/^skip$/i.test(assigneeName)) {
+              const accountId = await searchJiraUser(assigneeName);
+              if (!accountId) {
+                await message.channel.send(`❌ ไม่พบ user "${assigneeName}" ใน Jira ครับ ข้ามการ assign`);
+              } else {
+                const { assigned, failed: aFailed } = await assignSubtasks(okSubtasks, accountId);
+                assignedLine = `👤 Assign ให้ ${assigneeName} — ${assigned.length} Sub-task`;
+                await message.channel.send([
+                  `✅ Assign ให้ **${assigneeName}** สำเร็จ ${assigned.length} ตัว`,
+                  aFailed.length ? `⚠️ assign ล้มเหลว: ${aFailed.join(", ")}` : null,
+                ].filter(Boolean).join("\n"));
+              }
+            }
+
+            // 7) comment ผลการทดสอบ Scenario ลงใน Story
+            const resultText = [
+              comment || "",
+              `📋 ผลการทดสอบ ${scenarioId ? `Scenario ${scenarioId}` : `TC ${tcs.join(", ")}`} — ✅ ผ่านครบทุก TC (${tcs.length})`,
+              `✅ Test Cases: ${tcs.join(", ")}`,
+              `🔧 Sub-task: ${okSubtasks.join(", ")} → ${SUBTASK_FINAL_STATUS}`,
+              assignedLine,
+            ].filter(Boolean).join("\n");
+            const { stories } = await commentScenarioStory(okSubtasks, resultText);
+            if (stories.length) await message.channel.send(`📝 Comment ผลการทดสอบลงใน Story แล้วครับ: ${stories.join(", ")}`);
+            else                await message.channel.send(`⚠️ ไม่พบ Story (parent) ของ Sub-task จึงไม่ได้ comment ครับ`);
+          } finally {
+            waitingConfirm.delete(discordUserId);
+          }
+          break;
+        }
 
         const retestMatch = reply.match(/__ASK_RETEST__:(TC_[A-Z0-9_]+)/);
         const cleanReply  = retestMatch
