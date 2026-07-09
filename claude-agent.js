@@ -1009,6 +1009,40 @@ async function findLatestDefect(tcId, projectKey = "SR") {
   } catch (e) { console.error("findLatestDefect error:", e.message); return null; }
 }
 
+// รายงาน Bug ที่ค้างอยู่ของ project RDT — ดึง issuetype = Bug ที่ยังไม่ปิด แล้วจัดกลุ่มตาม status
+// คืนเป็นข้อความพร้อมแสดงผล (string)
+async function handleBugReport(ctx) {
+  const projectKey = "RDT";
+  const jql = `issuetype = Bug AND project = "${projectKey}" AND status not in (Done, Closed, Resolved) ORDER BY status ASC, priority DESC, updated DESC`;
+  let issues;
+  try {
+    issues = await jiraRequestAll(jql, ["summary","status","assignee","priority"], 300);
+  } catch (e) {
+    console.error("handleBugReport error:", e.message);
+    return `❌ ดึง Bug จาก Jira ล้มเหลว: ${e.message}`;
+  }
+  if (issues.length === 0) return `✅ ไม่มี Bug ค้างใน project ${projectKey} ครับ`;
+
+  // จัดกลุ่มตาม status (คง insertion order จาก ORDER BY status)
+  const groups = {};
+  for (const i of issues) {
+    const status = i.fields?.status?.name || "?";
+    (groups[status] ||= []).push(i);
+  }
+
+  const lines = [`🐞 **Bug ค้างของ project ${projectKey}** — ${issues.length} รายการ`];
+  for (const [status, items] of Object.entries(groups)) {
+    lines.push(``, `**${status} (${items.length})**`);
+    for (const i of items) {
+      const summary  = (i.fields?.summary || "").slice(0, 70);
+      const priority = i.fields?.priority?.name || "N/A";
+      const assignee = i.fields?.assignee?.displayName || "ไม่มี assignee";
+      lines.push(`— **${i.key}** ${summary} | ${priority} | ${assignee}`);
+    }
+  }
+  return lines.join("\n");
+}
+
 // ดึง card ที่กำลัง fix หรือรอ retest (status: FIXING / TO TEST / Retest) แล้วแยก 2 กรณี
 //   - defects: card ที่มี TC_ ใน summary → ดึง TC ID มา retest อัตโนมัติได้
 //   - others : card ที่ไม่มี TC_ ใน summary → "งานอื่น" ให้ user ตัดสินใจเอง
@@ -1727,7 +1761,7 @@ async function handleMessage(userMessage, discordUserId, fileUrl = null, fileNam
 module.exports = {
   askClaude: handleMessage,
   getTcStatusFromExcel, getExcelPath, findLatestExcel,
-  handleRetestReport, handleToTestReport,
+  handleRetestReport, handleToTestReport, handleBugReport,
   // scenario-complete interactive flow (bot.js orchestrates)
   fetchSubtasksOfStories, transitionScenarioSubtasks, assignSubtasks,
   transitionStoryToDeploy, commentScenarioStory, searchJiraUser,

@@ -5,7 +5,7 @@ require("dotenv").config();
 
 const { Client, GatewayIntentBits } = require("discord.js");
 const {
-  askClaude: handleMessage, handleRetestReport, handleToTestReport,
+  askClaude: handleMessage, handleRetestReport, handleToTestReport, handleBugReport,
   transitionScenarioSubtasks, assignSubtasks, commentScenarioStory, searchJiraUser,
   SUBTASK_FINAL_STATUS,
 } = require("./claude-agent");
@@ -587,6 +587,13 @@ client.on("messageCreate", async (message) => {
           lines.push(``);
         }
         await sendLong(message, lines.join("\n"));
+        break;
+      }
+
+      case "bug_report": {
+        await message.channel.sendTyping();
+        const bugReply = await handleBugReport(context);
+        await sendLong(message, bugReply);
         break;
       }
 

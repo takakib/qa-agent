@@ -14,6 +14,7 @@ const INTENT_CONTEXT_MAP = {
   retest:          ["user", "activeProject", "recentLog"],
   retest_report:   ["user", "activeProject", "recentLog"],
   to_test_report:  ["user", "activeProject"],
+  bug_report:      ["user", "activeProject"],
   test_history:    ["user", "activeProject", "recentLog"],
   jira_status:     ["user", "activeProject"],
   jira_toggle:     ["user", "activeProject"],
@@ -51,6 +52,7 @@ function trimLog(log) {
 const INTENT_PATTERNS = [
   { pattern: /retest\s*report|รายงาน\s*retest/i,                               intent: "retest_report" },
   { pattern: /to\s*test\s*report|งาน\s*to\s*test/i,                            intent: "to_test_report" },
+  { pattern: /bug\s*ทั้งหมด|รายงาน\s*bug|bug\s*report|ดู\s*bug|list\s*bug/i,   intent: "bug_report" },
   { pattern: /\bretest\s+TC_\S+/i,                                             intent: "retest" },
   { pattern: /\btest\s+TC_\S+/i,                                               intent: "browser_test" },
   { pattern: /clear[\s_]?cache/i,                                               intent: "clear_cache" },
