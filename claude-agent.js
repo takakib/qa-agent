@@ -1111,6 +1111,68 @@ const SUBTASK_DONE_CHAIN = [
 ];
 const SUBTASK_FINAL_STATUS = "WAITING FOR DEPLOY PROD";
 
+// ลำดับสถานะของ "Story" เพื่อไล่ transition ไปจนถึง WAITING FOR DEPLOY
+//   QA UAT PENDING --(id 16)--> TO TEST --> QA IN PROGRESS --> QA TESTING DONE --> WAITING FOR DEPLOY
+// การเทียบใช้แบบ startsWith (uppercase) เพื่อรองรับ suffix เช่น "WAITING FOR DEPLOY PROD"
+const STORY_STATUS_ORDER = ["QA UAT PENDING", "TO TEST", "QA IN PROGRESS", "QA TESTING DONE", "WAITING FOR DEPLOY"];
+
+// ดึงรายการ transition ที่ทำได้ ณ สถานะปัจจุบันของ issue
+async function jiraGetTransitions(issueKey) {
+  const data = await jiraGet(`/rest/api/3/issue/${issueKey}/transitions`);
+  return data.transitions || [];
+}
+
+// ไล่ transition ของ Story จากสถานะปัจจุบัน → WAITING FOR DEPLOY โดย fetch transitions ใหม่ทุก step (ยืดหยุ่น)
+//   - ถ้าอยู่ QA UAT PENDING: ใช้ transition id 16 ไป TO TEST ก่อน (ตาม requirement)
+//   - จาก TO TEST เป็นต้นไป: หา transition ที่ to.name ตรงกับสถานะถัดไป (ไม่ hardcode id)
+// คืน { ok, story, steps: [...], error? }
+async function transitionStoryToDeploy(storyKey) {
+  const steps = [];
+  const startsWithCI = (name, target) => (name || "").trim().toUpperCase().startsWith(target.toUpperCase());
+  const idxOf        = (name) => STORY_STATUS_ORDER.findIndex(s => startsWithCI(name, s));
+
+  // 1) fetch current status ของ Story
+  let statusName = "";
+  try {
+    const data = await jiraGet(`/rest/api/3/issue/${storyKey}?fields=status`);
+    statusName = (data.fields?.status?.name || "").trim();
+  } catch (e) {
+    return { ok: false, story: storyKey, steps, error: `ดึง status ล้มเหลว: ${e.message}` };
+  }
+
+  let idx = idxOf(statusName);
+  if (idx === -1) return { ok: false, story: storyKey, steps, error: `status "${statusName}" ไม่อยู่ใน flow ของ Story` };
+
+  // 2+3) เดินจากสถานะปัจจุบันไปจนถึง WAITING FOR DEPLOY
+  while (idx < STORY_STATUS_ORDER.length - 1) {
+    const curStatus  = STORY_STATUS_ORDER[idx];
+    const nextStatus = STORY_STATUS_ORDER[idx + 1];
+    let transitionId = null, transitionName = null;
+
+    if (startsWithCI(curStatus, "QA UAT PENDING")) {
+      // requirement: จาก QA UAT PENDING ใช้ transition id 16 ไป TO TEST
+      transitionId = "16"; transitionName = "id 16";
+    } else {
+      // fetch transitions ใหม่ทุก step แล้วหา transition ที่ไปยัง nextStatus (ยืดหยุ่น ไม่ hardcode id)
+      let transitions;
+      try { transitions = await jiraGetTransitions(storyKey); }
+      catch (e) { return { ok: false, story: storyKey, steps, error: `ดึง transitions ล้มเหลว: ${e.message}` }; }
+      const t = transitions.find(tr => startsWithCI(tr.to?.name, nextStatus));
+      if (!t) return { ok: false, story: storyKey, steps, error: `ไม่พบ transition "${curStatus}" → "${nextStatus}"` };
+      transitionId = t.id; transitionName = `${t.name} / id ${t.id}`;
+    }
+
+    const res = await jiraPost(`/rest/api/3/issue/${storyKey}/transitions`, { transition: { id: transitionId } });
+    if (res?.errorMessages?.length || res?.errors) {
+      return { ok: false, story: storyKey, steps, error: `transition → ${nextStatus} (${transitionName}) ล้มเหลว: ${JSON.stringify(res.errorMessages || res.errors)}` };
+    }
+    steps.push(`${curStatus} → ${nextStatus} (${transitionName})`);
+    idx++;
+  }
+
+  return { ok: true, story: storyKey, steps };
+}
+
 // dedupe Story key จาก list ของ TC rows (jira_key ที่ match ไว้คือ "Story")
 function storyKeysOf(rows) {
   return [...new Set(
@@ -1211,13 +1273,28 @@ async function assignSubtasks(issueKeys, accountId) {
   return { assigned, failed };
 }
 
-// comment ผลการทดสอบ Scenario ลงใน Story ที่ match ไว้ (รับ Story key ตรง ๆ — dedupe)
-// คืน { stories: [key,...] }
+// update Story หลัง Sub-task เสร็จ: (1) transition Story → WAITING FOR DEPLOY แบบยืดหยุ่น
+// (2) comment ผลการทดสอบ Scenario ลงใน Story ที่ match ไว้ (รับ Story key ตรง ๆ — dedupe)
+// คืน { stories: [key,...], transitions: { STORY: { ok, steps, error? } } }
 async function commentScenarioStory(storyKeys, resultText) {
-  const now     = new Date().toLocaleString("th-TH", { timeZone: "Asia/Bangkok" });
-  const text    = `${resultText}\n\n_อัพเดทโดย QA Bot เมื่อ ${now}_`;
-  const stories = [];
+  const now         = new Date().toLocaleString("th-TH", { timeZone: "Asia/Bangkok" });
+  const stories     = [];
+  const transitions = {};
   for (const storyKey of [...new Set(storyKeys || [])]) {
+    // 1) transition Story ไปจนถึง WAITING FOR DEPLOY (fetch status + transitions ทุก step)
+    let statusLine = "";
+    try {
+      const tr = await transitionStoryToDeploy(storyKey);
+      transitions[storyKey] = tr;
+      if (tr.ok) statusLine = tr.steps.length ? `\n🔀 Story status: ${tr.steps.join("  →  ")}` : `\n🔀 Story อยู่ปลายทางแล้ว`;
+      else       statusLine = `\n⚠️ Story transition ไม่ครบ: ${tr.error}${tr.steps.length ? ` (ทำได้: ${tr.steps.join("  →  ")})` : ""}`;
+    } catch (e) {
+      transitions[storyKey] = { ok: false, story: storyKey, steps: [], error: e.message };
+      statusLine = `\n⚠️ Story transition error: ${e.message}`;
+    }
+
+    // 2) comment ผลลง Story (แนบ trail การเปลี่ยน status ไปด้วย)
+    const text = `${resultText}${statusLine}\n\n_อัพเดทโดย QA Bot เมื่อ ${now}_`;
     try {
       await jiraPost(`/rest/api/3/issue/${storyKey}/comment`, {
         body: { type: "doc", version: 1, content: [{ type: "paragraph", content: [{ type: "text", text }] }] },
@@ -1225,7 +1302,7 @@ async function commentScenarioStory(storyKeys, resultText) {
       stories.push(storyKey);
     } catch (e) { console.error(`[commentScenarioStory] comment Story ${storyKey} ล้มเหลว:`, e.message); }
   }
-  return { stories };
+  return { stories, transitions };
 }
 
 async function handleUpdateIssue(issueKey, action, comment) {
@@ -1652,6 +1729,7 @@ module.exports = {
   getTcStatusFromExcel, getExcelPath, findLatestExcel,
   handleRetestReport, handleToTestReport,
   // scenario-complete interactive flow (bot.js orchestrates)
-  fetchSubtasksOfStories, transitionScenarioSubtasks, assignSubtasks, commentScenarioStory, searchJiraUser,
+  fetchSubtasksOfStories, transitionScenarioSubtasks, assignSubtasks,
+  transitionStoryToDeploy, commentScenarioStory, searchJiraUser,
   RACHATA_ACCOUNT_ID, SUBTASK_FINAL_STATUS,
 };
