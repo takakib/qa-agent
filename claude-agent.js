@@ -1423,7 +1423,7 @@ async function handleMyTasks(userMessage, ctx, systemPrompt) {
   const data   = await jiraRequest(jql);
   const issues = data.issues || [];
   if (issues.length === 0) return "ไม่พบ issue ที่ตรงกับเงื่อนไขครับ";
-  const rawList = issues.slice(0, 30).map((i) =>
+  const rawList = issues.slice(0, 100).map((i) =>
     `- ${i.key}: ${i.fields.summary} | Status: ${i.fields.status?.name ?? "?"} | Priority: ${i.fields.priority?.name ?? "N/A"} | Due: ${i.fields.duedate ?? "ไม่กำหนด"}`
   ).join("\n");
   const prompt = `${systemPrompt || "คุณคือ QA Assistant"}\n\nสรุป Jira tasks ที่ได้รับมอบหมาย\nดู tasks ทั้งหมด ${issues.length} รายการ:\n${rawList}\nจัดกลุ่มสวยงาม: แบ่งตาม Status  Feature  ticket key ตอบพร้อม emoji bullet point`;
@@ -1447,12 +1447,12 @@ async function handleProjectTasks(userMessage, project, ctx, systemPrompt) {
     else return `❌ ไม่พบ user "${assigneeMatch[1]}" ใน Jira ครับ`;
   }
   const jql    = cond.join(" AND ") + " ORDER BY status ASC, updated DESC";
-  const issues = await jiraRequestAll(jql, ["summary","status","assignee","priority","duedate"], 300);
+  const issues = await jiraRequestAll(jql, ["summary","status","assignee","priority","duedate"], 500);
   if (issues.length === 0) return `ไม่พบ issue ใน project ${project} ครับ`;
-  const rawList = issues.slice(0, 50).map((i) =>
+  const rawList = issues.slice(0, 100).map((i) =>
     `- ${i.key}: ${i.fields.summary} | Status: ${i.fields.status?.name ?? "?"} | Assignee: ${i.fields.assignee?.displayName ?? "ไม่กำหนด"} | Priority: ${i.fields.priority?.name ?? "N/A"} | Due: ${i.fields.duedate ?? "ไม่กำหนด"}`
   ).join("\n");
-  const more   = issues.length > 50 ? `\n(มีอีก ${issues.length - 50} issue)` : "";
+  const more   = issues.length > 100 ? `\n(มีอีก ${issues.length - 100} issue)` : "";
   const prompt = `${systemPrompt || "คุณคือ QA Assistant"}\n\nสรุป Jira tasks ของ project ${project}\n${issues.length} รายการ:\n${rawList}${more}\nจัดกลุ่มสวยงาม: Status  Feature  key+Assignee ตอบพร้อม emoji bullet point`;
   return await askClaude(prompt);
 }
