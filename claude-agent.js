@@ -1410,6 +1410,150 @@ async function handleDueSoon(days, ctx) {
   return `📅 **Due ใน ${days} วัน** — ${issues.length} issue\n\n` + lines.join("\n");
 }
 
+// ─────────────────────────────────────────────
+// UPDATE DUE DATE (bulk)
+// ─────────────────────────────────────────────
+
+// เรียงยาว→สั้น เพื่อให้ "QA TESTING DONE" ชนะ "DONE" ตอน match
+const KNOWN_STATUSES = [
+  "WAITING FOR DEPLOY PROD", "WAITING FOR DEPLOY", "QA UAT PENDING", "QA TESTING DONE",
+  "QA IN PROGRESS", "UAT PENDING", "IN PROGRESS", "TO TEST", "RETEST", "FIXING",
+  "RESOLVED", "CLOSED", "DONE",
+].sort((a, b) => b.length - a.length);
+
+function toIsoDate(d) {
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+function daysFromToday(n) {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() + n);
+  return d;
+}
+
+// parse วันที่จากข้อความ → "YYYY-MM-DD" หรือ null
+// รองรับ 2026-08-01 | 01/08/2026 (DD/MM/YYYY, ปี พ.ศ. แปลงให้) | วันนี้ | พรุ่งนี้ | มะรืน | อีก N วัน | สัปดาห์หน้า | สิ้นเดือน
+function parseDueDate(message) {
+  const iso = message.match(/(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (iso) return toIsoDate(new Date(+iso[1], +iso[2] - 1, +iso[3]));
+
+  // ใช้แค่ / กับ . เป็นตัวคั่น — แบบ - ถูก ISO ข้างบนจับไปแล้ว
+  const slash = message.match(/(\d{1,2})[\/.](\d{1,2})[\/.](\d{4})/);
+  if (slash) {
+    const year = +slash[3] >= 2500 ? +slash[3] - 543 : +slash[3];
+    return toIsoDate(new Date(year, +slash[2] - 1, +slash[1]));
+  }
+
+  if (/มะรืน/i.test(message))                          return toIsoDate(daysFromToday(2));
+  if (/พรุ่งนี้|tomorrow/i.test(message))              return toIsoDate(daysFromToday(1));
+  if (/วันนี้|today/i.test(message))                   return toIsoDate(daysFromToday(0));
+  if (/สัปดาห์หน้า|อาทิตย์หน้า|next\s+week/i.test(message)) return toIsoDate(daysFromToday(7));
+
+  const inDays = message.match(/อีก\s*(\d+)\s*วัน|in\s+(\d+)\s+days?/i);
+  if (inDays) return toIsoDate(daysFromToday(+(inDays[1] || inDays[2])));
+
+  if (/สิ้นเดือน|end\s+of\s+month/i.test(message)) {
+    const now = new Date();
+    return toIsoDate(new Date(now.getFullYear(), now.getMonth() + 1, 0)); // day 0 = วันสุดท้ายเดือนก่อนหน้า
+  }
+  return null;
+}
+
+// แปลงเงื่อนไขในข้อความเป็น JQL — คืน { jql, filterText } หรือ { error }
+function buildDueDateQuery(userMessage, ctx) {
+  // ระบุ issue key มาตรงๆ → ใช้ตามนั้น ไม่ต้องเดาเงื่อนไขอื่น
+  const keys = [...new Set(userMessage.toUpperCase().match(/\b[A-Z][A-Z0-9]+-\d+\b/g) || [])];
+  if (keys.length) {
+    return { jql: `key in (${keys.join(", ")}) ORDER BY key ASC`, filterText: `issue ${keys.join(", ")}` };
+  }
+
+  const cond = [], filters = [];
+
+  const projectMatch = userMessage.match(/\bproject\s+([A-Za-z][A-Za-z0-9_]*)/i);
+  const projectKey   = (projectMatch ? projectMatch[1] : getJiraKey(ctx)).toUpperCase();
+  cond.push(`project = "${projectKey}"`);
+  filters.push(`project = ${projectKey}`);
+
+  const quoted = userMessage.match(/status\s*=\s*["']([^"']+)["']/i);
+  const status = quoted
+    ? quoted[1].trim().toUpperCase()
+    : KNOWN_STATUSES.find(s => new RegExp(`\\b${s.replace(/ /g, "\\s*")}\\b`, "i").test(userMessage)) || null;
+  if (status) { cond.push(`status = "${status}"`); filters.push(`status = ${status}`); }
+
+  if (/ของฉัน|ของผม|\bmy\b|\bme\b/i.test(userMessage)) {
+    cond.push(`assignee = "${getMyAccountId(ctx)}"`);
+    filters.push("assignee = ฉัน");
+  }
+
+  if (/overdue|เกิน\s*due|งานค้าง/i.test(userMessage)) {
+    cond.push("duedate < startOfDay()");
+    filters.push("overdue");
+  }
+
+  // กันยิง PUT ใส่ทั้ง project — ต้องมีเงื่อนไขอย่างน้อย 1 อย่างนอกจาก project
+  if (filters.length < 2) {
+    return { error: "❌ เงื่อนไขกว้างเกินไปครับ ระบุเพิ่มด้วย เช่น `ปรับ due date ของงาน To Test เป็น 2026-08-01` หรือระบุ issue key มาตรงๆ" };
+  }
+
+  return { jql: cond.join(" AND ") + " ORDER BY duedate ASC, key ASC", filterText: filters.join(" | ") };
+}
+
+// รวบรวมงานที่จะโดนแก้ due date — ยังไม่เขียนอะไรลง Jira
+// bot.js จะเอาไปแสดงให้ user ยืนยันก่อน แล้วค่อยเรียก applyDueDate
+// คืน { error } หรือ { dueDate, filterText, issues: [{ key, summary, status, duedate }] }
+async function handleUpdateDueDate(userMessage, ctx) {
+  const dueDate = parseDueDate(userMessage);
+  if (!dueDate) {
+    return { error: "❌ ไม่เข้าใจวันที่ครับ ระบุแบบ `2026-08-01`, `01/08/2026`, `พรุ่งนี้`, `อีก 3 วัน` หรือ `สิ้นเดือน` ได้ครับ" };
+  }
+
+  const q = buildDueDateQuery(userMessage, ctx);
+  if (q.error) return { error: q.error };
+
+  let issues;
+  try {
+    issues = await jiraRequestAll(q.jql, ["summary", "status", "assignee", "duedate"], 300);
+  } catch (e) {
+    console.error("handleUpdateDueDate error:", e.message);
+    return { error: `❌ ดึง issue จาก Jira ล้มเหลว: ${e.message}` };
+  }
+  if (issues.length === 0) return { error: `ไม่พบ issue ที่ตรงกับเงื่อนไข (${q.filterText}) ครับ` };
+
+  return {
+    dueDate,
+    filterText: q.filterText,
+    issues: issues.map(i => ({
+      key:     i.key,
+      summary: i.fields?.summary || "",
+      status:  i.fields?.status?.name || "?",
+      duedate: i.fields?.duedate || null,
+    })),
+  };
+}
+
+// เขียน duedate ลง Jira ทีละ issue — คืน { updated: [key], failed: [{ key, error }] }
+async function applyDueDate(issueKeys, dueDate) {
+  const updated = [], failed = [];
+  for (const key of issueKeys) {
+    try {
+      const res = await jiraPut(`/rest/api/3/issue/${encodeURIComponent(key)}`, { fields: { duedate: dueDate } });
+      // สำเร็จ Jira คืน 204 ไม่มี body → jiraPut ให้ { status: 204 }
+      const err = res?.errorMessages?.length ? res.errorMessages.join(", ")
+                : res?.errors               ? JSON.stringify(res.errors)
+                : res?.status >= 400        ? `HTTP ${res.status}`
+                : null;
+      if (err) { console.error(`[applyDueDate] ${key}: ${err}`); failed.push({ key, error: err }); }
+      else updated.push(key);
+    } catch (e) {
+      console.error(`[applyDueDate] ${key}:`, e.message);
+      failed.push({ key, error: e.message });
+    }
+  }
+  return { updated, failed };
+}
+
 async function handleMyTasks(userMessage, ctx, systemPrompt) {
   const accountId = getMyAccountId(ctx);
   const m         = userMessage.toLowerCase();
@@ -1762,6 +1906,8 @@ module.exports = {
   askClaude: handleMessage,
   getTcStatusFromExcel, getExcelPath, findLatestExcel,
   handleRetestReport, handleToTestReport, handleBugReport,
+  // bulk update due date (bot.js ถามยืนยันคั่นระหว่าง 2 ตัวนี้)
+  handleUpdateDueDate, applyDueDate,
   // scenario-complete interactive flow (bot.js orchestrates)
   fetchSubtasksOfStories, transitionScenarioSubtasks, assignSubtasks,
   transitionStoryToDeploy, commentScenarioStory, searchJiraUser,

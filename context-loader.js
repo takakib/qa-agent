@@ -20,6 +20,7 @@ const INTENT_CONTEXT_MAP = {
   jira_toggle:     ["user", "activeProject"],
   jira_tasks:      ["user", "activeProject"],
   jira_overdue:    ["user", "activeProject"],
+  update_due_date: ["user", "activeProject"],
   switch_project:  ["user", "allProjects"],
   list_projects:   ["user", "allProjects"],
   add_project:     ["user", "allProjects"],
@@ -50,6 +51,9 @@ function trimLog(log) {
 }
 
 const INTENT_PATTERNS = [
+  // ต้องอยู่บนสุด: ข้อความอย่าง "ปรับ due date ของงาน to test" จะโดน to_test_report
+  // และ "เปลี่ยน due date ของ project SR8" จะโดน switch_project ดักไปก่อน (match แรกชนะ)
+  { pattern: /(?:ปรับ|เปลี่ยน|แก้ไข|แก้|ตั้ง|set|update|change)\s*(?:วันที่\s*)?due\s*date|due\s*date\s*(?:เป็น|=)/i, intent: "update_due_date" },
   { pattern: /retest\s*report|รายงาน\s*retest/i,                               intent: "retest_report" },
   { pattern: /to\s*test\s*report|งาน\s*to\s*test/i,                            intent: "to_test_report" },
   { pattern: /bug\s*ทั้งหมด|รายงาน\s*bug|bug\s*report|ดู\s*bug|list\s*bug/i,   intent: "bug_report" },

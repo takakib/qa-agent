@@ -6,6 +6,7 @@ require("dotenv").config();
 const { Client, GatewayIntentBits } = require("discord.js");
 const {
   askClaude: handleMessage, handleRetestReport, handleToTestReport, handleBugReport,
+  handleUpdateDueDate, applyDueDate,
   transitionScenarioSubtasks, assignSubtasks, commentScenarioStory, searchJiraUser,
   SUBTASK_FINAL_STATUS,
 } = require("./claude-agent");
@@ -594,6 +595,60 @@ client.on("messageCreate", async (message) => {
         await message.channel.sendTyping();
         const bugReply = await handleBugReport(context);
         await sendLong(message, bugReply);
+        break;
+      }
+
+      case "update_due_date": {
+        await message.channel.sendTyping();
+        const plan = await handleUpdateDueDate(userMessage, context);
+        if (plan.error) { await message.reply(plan.error); break; }
+
+        const preview = [
+          `📅 **จะปรับ due date เป็น ${plan.dueDate}** — ${plan.issues.length} issue`,
+          `🔎 เงื่อนไข: ${plan.filterText}`,
+          ``,
+          ...plan.issues.slice(0, 25).map(i =>
+            `• **${i.key}** \`${i.status}\` — ${i.summary.slice(0, 55)} | เดิม: ${i.duedate ?? "ไม่กำหนด"}`
+          ),
+        ];
+        if (plan.issues.length > 25) preview.push(`...และอีก ${plan.issues.length - 25} issue`);
+        preview.push(``, `พิมพ์ \`yes\` เพื่อยืนยัน หรือ \`no\` เพื่อยกเลิกครับ (ภายใน 60 วินาที)`);
+        await sendLong(message, preview.join("\n"));
+
+        waitingConfirm.add(discordUserId);
+        try {
+          let answer;
+          try {
+            const filter    = m => m.author.id === discordUserId && /^(y|yes|ใช่|n|no|ไม่|ยกเลิก)\s*$/i.test(m.content.trim());
+            const collected = await message.channel.awaitMessages({ filter, max: 1, time: 60000, errors: ["time"] });
+            answer = collected.first().content.trim();
+            processedIds.add(collected.first().id);
+          } catch (e) {
+            await message.channel.send("⏰ หมดเวลา 60 วินาที — ยกเลิกการปรับ due date ครับ");
+            break;
+          }
+          if (!/^(y|yes|ใช่)/i.test(answer)) {
+            await message.channel.send("รับทราบครับ ไม่ได้แก้อะไรใน Jira");
+            break;
+          }
+
+          await message.channel.sendTyping();
+          await message.channel.send(`⏳ กำลังปรับ due date ${plan.issues.length} issue ครับ...`);
+          const { updated, failed } = await applyDueDate(plan.issues.map(i => i.key), plan.dueDate);
+
+          const result = [`✅ ปรับ due date เป็น **${plan.dueDate}** สำเร็จ ${updated.length}/${plan.issues.length} issue`];
+          if (updated.length) result.push(updated.join(", "));
+          if (failed.length) {
+            result.push(``, `❌ ไม่สำเร็จ ${failed.length} issue:`);
+            failed.forEach(f => result.push(`• ${f.key} — ${f.error}`));
+          }
+          await sendLong(message, result.join("\n"));
+          contextLoader.logAction(discordUserId, "update_due_date", {
+            note: `${plan.filterText} → ${plan.dueDate} (สำเร็จ ${updated.length}/${plan.issues.length})`,
+          });
+        } finally {
+          waitingConfirm.delete(discordUserId);
+        }
         break;
       }
 
