@@ -37,6 +37,20 @@ function formatTime(tsStr) {
   });
 }
 
+// เวลา ณ ปัจจุบันใน Asia/Bangkok — คืน { hhmm: "09:00", weekday: "Mon" }
+// ใช้แทน now.getHours() เพื่อไม่ให้ผลลัพธ์ผูกกับ timezone ของเครื่องที่รัน
+function bangkokNow() {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat("en-GB", {
+      timeZone: "Asia/Bangkok",
+      hour: "2-digit", minute: "2-digit", hour12: false, weekday: "short",
+    }).formatToParts(new Date()).map(p => [p.type, p.value])
+  );
+  // hour12:false บางรันไทม์คืน "24" ตอนเที่ยงคืน → normalize เป็น "00"
+  const hour = parts.hour === "24" ? "00" : parts.hour;
+  return { hhmm: `${hour}:${parts.minute}`, weekday: parts.weekday };
+}
+
 // ─────────────────────────────────────────────
 // READ EXCEL TC PROGRESS
 // ─────────────────────────────────────────────
@@ -265,6 +279,54 @@ function formatMorningBrief(userId) {
 }
 
 // ─────────────────────────────────────────────
+// MORNING BRIEF — Jira tasks ที่ยังไม่ Done ของ project RDT
+// ดึงด้วย handleToTestReport (TO TEST) + handleBugReport (Bug ค้าง) แล้วจัดกลุ่มตาม status
+// ─────────────────────────────────────────────
+
+// require แบบ lazy กัน load-order/circular ตอน daily-summary ถูก import เดี่ยวๆ
+function getAgent() {
+  return require("./claude-agent");
+}
+
+async function buildRdtMorningBrief() {
+  const agent = getAgent();
+  // handleBugReport hardcode RDT อยู่แล้ว ส่วน handleToTestReport อ่าน jiraKey จาก ctx → บังคับเป็น RDT
+  const ctx = { activeProject: { key: "RDT", jiraKey: "RDT" } };
+
+  const [toTest, bugText] = await Promise.all([
+    agent.handleToTestReport(ctx),
+    agent.handleBugReport(ctx),
+  ]);
+
+  const dateLabel = new Date().toLocaleDateString("th-TH", {
+    timeZone: "Asia/Bangkok", day: "numeric", month: "short", year: "numeric",
+  });
+  const lines = [`🌅 **Morning Brief — RDT** (${dateLabel})`, ""];
+
+  // ── กลุ่ม status: TO TEST ──
+  if (toTest.error) {
+    lines.push(toTest.error, "");
+  } else {
+    const items = (toTest.epics || []).flatMap(ep => [...ep.mine, ...ep.others]);
+    lines.push(`🧪 **TO TEST — ${toTest.total} งาน**`);
+    if (items.length === 0) {
+      lines.push("  _ไม่มีงานสถานะ TO TEST ครับ_");
+    } else {
+      items.slice(0, 20).forEach(it =>
+        lines.push(`  • ${it.key} \`${it.priority}\` — ${(it.summary || "").slice(0, 55)}`)
+      );
+      if (items.length > 20) lines.push(`  ...และอีก ${items.length - 20} งาน`);
+    }
+    lines.push("");
+  }
+
+  // ── กลุ่ม status อื่นๆ: Bug ค้าง (handleBugReport คืน string ที่จัดกลุ่มตาม status มาแล้ว) ──
+  lines.push(bugText);
+
+  return lines.join("\n");
+}
+
+// ─────────────────────────────────────────────
 // MAIN HANDLER
 // ─────────────────────────────────────────────
 
@@ -282,17 +344,19 @@ async function handleSummary(userId, ctx, options = {}) {
 function startScheduler(client) {
   console.log("[SCHEDULER] Daily report scheduler เริ่มทำงานแล้วครับ");
 
-  const sentToday = { morning: new Set(), evening: new Set() };
+  const sentToday = { morning: new Set(), evening: new Set(), rdtBrief: false };
 
   setInterval(async () => {
     const now  = new Date();
     const hhmm = `${String(now.getHours()).padStart(2,"0")}:${String(now.getMinutes()).padStart(2,"0")}`;
     const today = now.toDateString();
+    const bkk  = bangkokNow(); // เวลา/วัน ตาม Asia/Bangkok สำหรับ RDT morning brief
 
     if (sentToday._date !== today) {
-      sentToday._date   = today;
-      sentToday.morning = new Set();
-      sentToday.evening = new Set();
+      sentToday._date    = today;
+      sentToday.morning  = new Set();
+      sentToday.evening  = new Set();
+      sentToday.rdtBrief = false;
     }
 
     const memory = contextLoader.readMemory();
@@ -300,6 +364,24 @@ function startScheduler(client) {
 
     // ── Reminders ที่ถึงเวลา ─────────────────────────────
     await checkAndSendReminders(client, memory);
+
+    // ── RDT Morning Brief: จันทร์-ศุกร์ 09:00 Asia/Bangkok, ส่ง DM ทุก user ─────────
+    const isWeekday = ["Mon", "Tue", "Wed", "Thu", "Fri"].includes(bkk.weekday);
+    if (isWeekday && bkk.hhmm === "09:00" && !sentToday.rdtBrief) {
+      sentToday.rdtBrief = true; // กัน setInterval ยิงซ้ำภายในนาทีเดียวกัน
+      try {
+        const msg     = await buildRdtMorningBrief();
+        const userIds = Object.keys(users);
+        for (const userId of userIds) {
+          await client.users.fetch(userId)
+            .then(u => u.send(msg))
+            .catch(e => console.error(`[RDT BRIEF] DM ${userId} ล้มเหลว:`, e.message));
+        }
+        console.log(`[SCHEDULER] RDT morning brief → ${userIds.length} users`);
+      } catch (e) {
+        console.error("[SCHEDULER] RDT brief error:", e.message);
+      }
+    }
 
     for (const [userId, user] of Object.entries(users)) {
       const reportTime  = user.preferences?.reportTime   || "09:00";
@@ -377,4 +459,6 @@ module.exports = {
   buildSummaryData,
   formatSummary,
   formatMorningBrief,
+  buildRdtMorningBrief,
+  bangkokNow,
 };
